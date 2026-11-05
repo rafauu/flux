@@ -51,6 +51,9 @@ Makefile
 install_manifest.txt
 compile_commands.json
 
+# xmake
+.xmake/
+
 # Temporary files
 *.tmp
 *.log
