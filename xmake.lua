@@ -13,6 +13,7 @@ add_requires("glslang", {configs = {binaryonly = true}})
 add_requires("spdlog")
 add_requires("vulkan-hpp")
 add_requires("vulkan-loader")
+add_requires("vulkan-validationlayers")
 
 target("flux")
     set_kind("binary")
@@ -27,16 +28,6 @@ target("flux")
         "src/simulation/*.mpp"
     )
 
-    add_rules("utils.glsl2spv", {
-        outputdir = "build/shaders"
-    })
-
-    add_files("shaders/*.vert", "shaders/*.frag", "shaders/*.comp")
-
-    add_defines(
-        'FLUX_SHADER_DIR="' .. "$(projectdir)/build/shaders" .. '"'
-    )
-
     add_packages(
         "fast_io",
         "glfw",
@@ -44,8 +35,42 @@ target("flux")
         "glslang",
         "spdlog",
         "vulkan-hpp",
-        "vulkan-loader"
+        "vulkan-loader",
+        "vulkan-validationlayers"
     )
+
+    add_rules("utils.glsl2spv", {
+        outputdir = "build/shaders"
+    })
+
+    add_files(
+        "shaders/*.vert",
+        "shaders/*.frag",
+        "shaders/*.comp"
+    )
+
+    add_defines(
+        'FLUX_SHADER_DIR="' .. "$(projectdir)/build/shaders" .. '"'
+    )
+
+    on_run(function (target)
+        os.setenv("VK_INSTANCE_LAYERS", "VK_LAYER_KHRONOS_validation")
+        --os.setenv("VK_LOADER_DEBUG", "all")
+
+        local pkg = target:pkg("vulkan-validationlayers")
+        if pkg then
+            local pkgdir = pkg:installdir()
+
+            local layer_path = path.join(pkgdir, "share/vulkan/explicit_layer.d")
+            os.setenv("VK_LAYER_PATH", layer_path)
+
+            local lib_path = path.join(pkgdir, "lib")
+            local old_ld_path = os.getenv("LD_LIBRARY_PATH") or ""
+            os.setenv("LD_LIBRARY_PATH", lib_path .. ":" .. old_ld_path)
+        end
+
+        os.execv(target:targetfile())
+    end)
 
     set_warnings("allextra")
 

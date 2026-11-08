@@ -34,7 +34,7 @@ public:
 
         createRenderPass(swapchain);
         createPipelineLayout();
-        createGraphicsPipeline(swapchain);
+        createGraphicsPipeline();
     }
 
     [[nodiscard]] const vk::raii::RenderPass& getRenderPass() const
@@ -91,7 +91,7 @@ private:
         m_pipelineLayout = vk::raii::PipelineLayout(m_context.device(), info);
     }
 
-    void createGraphicsPipeline(const Swapchain& swapchain)
+    void createGraphicsPipeline()
     {
         vk::PipelineShaderStageCreateInfo shaderStages[2]{};
 
@@ -129,21 +129,20 @@ private:
         vk::PipelineInputAssemblyStateCreateInfo inputAssembly{};
         inputAssembly.topology = vk::PrimitiveTopology::ePointList;
 
-        const auto extent = swapchain.getExtent();
+        const std::array dynamicStates{
+            vk::DynamicState::eViewport,
+            vk::DynamicState::eScissor
+        };
 
-        vk::Viewport viewport{};
-        viewport.width = static_cast<float>(extent.width);
-        viewport.height = static_cast<float>(extent.height);
-        viewport.maxDepth = 1.0f;
-
-        vk::Rect2D scissor{};
-        scissor.extent = extent;
+        vk::PipelineDynamicStateCreateInfo dynamicInfo{};
+        dynamicInfo.dynamicStateCount = static_cast<uint32_t>(dynamicStates.size());
+        dynamicInfo.pDynamicStates = dynamicStates.data();
 
         vk::PipelineViewportStateCreateInfo viewportState{};
         viewportState.viewportCount = 1;
-        viewportState.pViewports = &viewport;
         viewportState.scissorCount = 1;
-        viewportState.pScissors = &scissor;
+        viewportState.pViewports = nullptr;
+        viewportState.pScissors = nullptr;
 
         vk::PipelineRasterizationStateCreateInfo rasterization{};
         rasterization.polygonMode = vk::PolygonMode::eFill;
@@ -177,6 +176,7 @@ private:
         info.pStages = shaderStages;
         info.pVertexInputState = &vertexInput;
         info.pInputAssemblyState = &inputAssembly;
+        info.pDynamicState = &dynamicInfo;
         info.pViewportState = &viewportState;
         info.pRasterizationState = &rasterization;
         info.pMultisampleState = &multisampling;

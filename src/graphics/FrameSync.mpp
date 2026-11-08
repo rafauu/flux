@@ -76,6 +76,19 @@ public:
     void resetImages(size_t imageCount)
     {
         m_imagesInFlight.assign(imageCount, vk::Fence{});
+
+        m_renderFinishedSemaphores.clear();
+        m_renderFinishedSemaphores.reserve(imageCount);
+
+        vk::SemaphoreCreateInfo info{};
+
+        for (size_t i = 0; i < imageCount; ++i)
+        {
+            m_renderFinishedSemaphores.emplace_back(
+                m_context.device(),
+                info
+            );
+        }
     }
 
     [[nodiscard]] vk::Semaphore getImageAvailableSemaphore() const
@@ -83,9 +96,9 @@ public:
         return *m_imageAvailableSemaphores[m_currentFrame];
     }
 
-    [[nodiscard]] vk::Semaphore getRenderFinishedSemaphore() const
+    [[nodiscard]] vk::Semaphore getRenderFinishedSemaphore(uint32_t imageIndex) const
     {
-        return *m_renderFinishedSemaphores[m_currentFrame];
+        return *m_renderFinishedSemaphores.at(imageIndex);
     }
 
     [[nodiscard]] vk::Fence getCurrentFence() const
@@ -109,7 +122,6 @@ private:
         for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
         {
             m_imageAvailableSemaphores[i] = vk::raii::Semaphore(m_context.device(), semaphoreInfo);
-            m_renderFinishedSemaphores[i] = vk::raii::Semaphore(m_context.device(), semaphoreInfo);
             m_inFlightFences[i] = vk::raii::Fence(m_context.device(), fenceInfo);
         }
     }
@@ -118,7 +130,7 @@ private:
     VulkanContext& m_context;
 
     std::array<vk::raii::Semaphore, MAX_FRAMES_IN_FLIGHT> m_imageAvailableSemaphores{nullptr, nullptr};
-    std::array<vk::raii::Semaphore, MAX_FRAMES_IN_FLIGHT> m_renderFinishedSemaphores{nullptr, nullptr};
+    std::vector<vk::raii::Semaphore> m_renderFinishedSemaphores;
     std::array<vk::raii::Fence, MAX_FRAMES_IN_FLIGHT> m_inFlightFences{nullptr, nullptr};
 
     std::vector<vk::Fence> m_imagesInFlight;

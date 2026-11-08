@@ -49,6 +49,7 @@ public:
         if (acquired.index == UINT32_MAX)
         {
             recreateSwapchain();
+            m_window.resetResizeFlag();
             return;
         }
 
@@ -247,7 +248,7 @@ private:
 
         const vk::Semaphore signalSemaphores[] =
         {
-            m_frameSync.getRenderFinishedSemaphore(),
+            m_frameSync.getRenderFinishedSemaphore(imageIndex),
             particleSystem.getGraphicsTimelineSemaphore()
         };
 
@@ -297,7 +298,7 @@ private:
 
     bool presentFrame(uint32_t imageIndex)
     {
-        const vk::Semaphore waitSemaphore = m_frameSync.getRenderFinishedSemaphore();
+        const vk::Semaphore waitSemaphore = m_frameSync.getRenderFinishedSemaphore(imageIndex);
 
         const vk::SwapchainKHR swapchain = *m_swapchain.getHandle();
 

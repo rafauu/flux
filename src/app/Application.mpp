@@ -50,12 +50,13 @@ private:
 
         auto previousTime = Clock::now();
 
-        while (!m_window.shouldClose())
+        while (not m_window.shouldClose())
         {
             m_window.pollEvents();
 
-            if (!m_renderer.isDrawable())
+            if (not m_renderer.isDrawable())
             {
+                m_window.waitEvents();
                 previousTime = Clock::now();
                 continue;
             }

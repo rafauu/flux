@@ -7,6 +7,7 @@ export module Platform.Window;
 
 import std;
 import Core.Logger;
+import Platform.GlfwContext;
 
 namespace logger = core::logger;
 
@@ -22,20 +23,33 @@ public:
     {
         logger::info("Creating window: {}", m_title);
 
-        initGLFW();
-        createWindow();
+        glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+        glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
+
+        m_window = glfwCreateWindow(
+            static_cast<int>(m_width),
+            static_cast<int>(m_height),
+            m_title.c_str(),
+            nullptr,
+            nullptr
+        );
+
+        if (not m_window)
+        {
+            throw std::runtime_error("Failed to create GLFW window.");
+        }
+
+        glfwSetWindowUserPointer(m_window, this);
+        glfwSetFramebufferSizeCallback(m_window, framebufferResizeCallback);
 
         logger::info("Window created successfully.");
     }
 
     ~Window()
     {
-        destroyWindow();
-
-        if (m_glfwInitialized)
+        if (m_window)
         {
-            glfwTerminate();
-            m_glfwInitialized = false;
+            glfwDestroyWindow(m_window);
         }
     }
 
@@ -91,43 +105,6 @@ public:
     }
 
 private:
-    void initGLFW()
-    {
-        if (not glfwInit())
-        {
-            throw std::runtime_error("Failed to initialize GLFW.");
-        }
-
-        m_glfwInitialized = true;
-
-        if (not glfwVulkanSupported())
-        {
-            throw std::runtime_error("GLFW reports that Vulkan is not supported.");
-        }
-
-        glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-        glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
-    }
-
-    void createWindow()
-    {
-        m_window = glfwCreateWindow(
-            static_cast<int>(m_width),
-            static_cast<int>(m_height),
-            m_title.c_str(),
-            nullptr,
-            nullptr
-        );
-
-        if (not m_window)
-        {
-            throw std::runtime_error("Failed to create GLFW window.");
-        }
-
-        glfwSetWindowUserPointer(m_window, this);
-        glfwSetFramebufferSizeCallback(m_window, framebufferResizeCallback);
-    }
-
     static void framebufferResizeCallback(GLFWwindow* window, int width, int height)
     {
         if (auto self = static_cast<Window*>(glfwGetWindowUserPointer(window)))
@@ -138,16 +115,7 @@ private:
         }
     }
 
-    void destroyWindow()
-    {
-        if (m_window)
-        {
-            glfwDestroyWindow(m_window);
-            m_window = nullptr;
-        }
-    }
-
-private:
+    GlfwContext m_glfwContext;
     GLFWwindow* m_window = nullptr;
 
     uint32_t m_width = 0;
@@ -156,6 +124,5 @@ private:
     std::string m_title;
 
     bool m_framebufferResized = false;
-    bool m_glfwInitialized = false;
 };
 }

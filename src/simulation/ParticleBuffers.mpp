@@ -17,7 +17,6 @@ public:
         vk::PhysicalDevice physicalDevice,
         const vk::raii::Queue& queue,
         vk::CommandPool commandPool,
-        uint32_t queueFamilyIndex,
         const std::vector<Particle>& particles
     )
         : m_device(device),
@@ -53,27 +52,11 @@ private:
     vk::DeviceSize m_size = 0;
 
     std::array<vk::raii::Buffer, 2> m_buffers{nullptr, nullptr};
+    std::array<vk::raii::DeviceMemory, 2> m_memory{nullptr, nullptr};
 
-    vk::raii::Semaphore m_computeTimelineSemaphore{nullptr};
-
-    vk::raii::Semaphore m_graphicsTimelineSemaphore{nullptr};
-
-    std::array<uint64_t, 2> m_lastGraphicsUse{0, 0};
-
-    uint64_t m_computeTimelineValue = 0;
-    uint64_t m_graphicsTimelineValue = 0;
-
-    std::array<vk::raii::DeviceMemory, 2> m_memory{
-        nullptr, nullptr
-    };
-
-    uint32_t findMemoryType(
-        uint32_t typeFilter,
-        vk::MemoryPropertyFlags properties
-    ) const
+    uint32_t findMemoryType(uint32_t typeFilter, vk::MemoryPropertyFlags properties) const
     {
-        const auto memoryProperties =
-            m_physicalDevice.getMemoryProperties();
+        const auto memoryProperties = m_physicalDevice.getMemoryProperties();
 
         for (uint32_t i = 0; i < memoryProperties.memoryTypeCount; ++i)
         {
@@ -83,8 +66,10 @@ private:
                 (memoryProperties.memoryTypes[i].propertyFlags
                  & properties) == properties;
 
-            if (supported && suitable)
+            if (supported and suitable)
+            {
                 return i;
+            }
         }
 
         throw std::runtime_error("No suitable Vulkan memory type.");
@@ -190,7 +175,7 @@ private:
             vk::BufferMemoryBarrier barrier{};
 
             barrier.srcAccessMask = vk::AccessFlagBits::eTransferWrite;
-            barrier.dstAccessMask = vk::AccessFlagBits::eVertexAttributeRead;
+            barrier.dstAccessMask = vk::AccessFlagBits::eVertexAttributeRead | vk::AccessFlagBits::eShaderRead;
 
             barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
             barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -204,7 +189,7 @@ private:
 
         commandBuffer.pipelineBarrier(
             vk::PipelineStageFlagBits::eTransfer,
-            vk::PipelineStageFlagBits::eVertexInput,
+            vk::PipelineStageFlagBits::eVertexInput | vk::PipelineStageFlagBits::eComputeShader,
             {},
             nullptr,
             barriers,

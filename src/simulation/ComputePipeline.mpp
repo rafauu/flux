@@ -30,20 +30,17 @@ public:
     ComputePipeline(const ComputePipeline&) = delete;
     ComputePipeline& operator=(const ComputePipeline&) = delete;
 
-    [[nodiscard]]
-    vk::Pipeline getPipeline() const
+    [[nodiscard]] vk::Pipeline getPipeline() const
     {
         return *m_pipeline;
     }
 
-    [[nodiscard]]
-    vk::PipelineLayout getPipelineLayout() const
+    [[nodiscard]] vk::PipelineLayout getPipelineLayout() const
     {
         return *m_pipelineLayout;
     }
 
-    [[nodiscard]]
-    vk::DescriptorSet getDescriptorSet(uint32_t index) const
+    [[nodiscard]] vk::DescriptorSet getDescriptorSet(uint32_t index) const
     {
         return *m_descriptorSets[index];
     }
@@ -77,8 +74,7 @@ private:
         info.bindingCount = static_cast<uint32_t>(bindings.size());
         info.pBindings = bindings.data();
 
-        m_descriptorSetLayout =
-            vk::raii::DescriptorSetLayout(m_device, info);
+        m_descriptorSetLayout = vk::raii::DescriptorSetLayout(m_device, info);
     }
 
     void createDescriptorPool()
@@ -88,12 +84,12 @@ private:
         poolSize.descriptorCount = 4;
 
         vk::DescriptorPoolCreateInfo info{};
+        info.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet;
         info.maxSets = 2;
         info.poolSizeCount = 1;
         info.pPoolSizes = &poolSize;
 
-        m_descriptorPool =
-            vk::raii::DescriptorPool(m_device, info);
+        m_descriptorPool = vk::raii::DescriptorPool(m_device, info);
     }
 
     void createDescriptorSets(
@@ -151,8 +147,7 @@ private:
         pushConstant.stageFlags = vk::ShaderStageFlagBits::eCompute;
         pushConstant.size = sizeof(float);
 
-        const vk::DescriptorSetLayout descriptorLayout =
-            *m_descriptorSetLayout;
+        const vk::DescriptorSetLayout descriptorLayout = *m_descriptorSetLayout;
 
         vk::PipelineLayoutCreateInfo info{};
         info.setLayoutCount = 1;
@@ -160,8 +155,7 @@ private:
         info.pushConstantRangeCount = 1;
         info.pPushConstantRanges = &pushConstant;
 
-        m_pipelineLayout =
-            vk::raii::PipelineLayout(m_device, info);
+        m_pipelineLayout = vk::raii::PipelineLayout(m_device, info);
     }
 
     void createPipeline()

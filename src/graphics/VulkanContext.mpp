@@ -12,6 +12,20 @@ import Platform.Window;
 
 namespace logger = core::logger;
 
+static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(
+    vk::DebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
+    vk::DebugUtilsMessageTypeFlagsEXT /*messageType*/,
+    const vk::DebugUtilsMessengerCallbackDataEXT* callbackData,
+    void* /*userData*/
+)
+{
+    if (std::to_underlying(messageSeverity) >= std::to_underlying(vk::DebugUtilsMessageSeverityFlagBitsEXT::eWarning))
+    {
+        logger::warn("[Vulkan Validation Layer]: {}", callbackData->pMessage);
+    }
+    return VK_FALSE;
+}
+
 export namespace graphics
 {
 class VulkanContext
@@ -129,12 +143,30 @@ private:
             throw std::runtime_error("Failed to get GLFW Vulkan extensions.");
         }
 
+        std::vector<const char*> extensions(glfwExtensions, glfwExtensions + extensionCount);
+        extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+
+        const std::vector<const char*> validationLayers = {"VK_LAYER_KHRONOS_validation"};
+
+        vk::DebugUtilsMessengerCreateInfoEXT debugCreateInfo{
+            {},
+            vk::DebugUtilsMessageSeverityFlagBitsEXT::eWarning | vk::DebugUtilsMessageSeverityFlagBitsEXT::eError,
+            vk::DebugUtilsMessageTypeFlagBitsEXT::eGeneral |
+            vk::DebugUtilsMessageTypeFlagBitsEXT::eValidation |
+            vk::DebugUtilsMessageTypeFlagBitsEXT::ePerformance,
+            debugCallback
+        };
+
         vk::InstanceCreateInfo createInfo{};
         createInfo.pApplicationInfo = &appInfo;
-        createInfo.enabledExtensionCount = extensionCount;
-        createInfo.ppEnabledExtensionNames = glfwExtensions;
+        createInfo.enabledExtensionCount = extensions.size();
+        createInfo.ppEnabledExtensionNames = extensions.data();
+        createInfo.enabledLayerCount = validationLayers.size();
+        createInfo.ppEnabledLayerNames = validationLayers.data();
+        createInfo.pNext = &debugCreateInfo;
 
         m_instance = vk::raii::Instance(m_context, createInfo);
+        m_debugMessenger = vk::raii::DebugUtilsMessengerEXT(m_instance, debugCreateInfo);
     }
 
     void createSurface()
@@ -259,7 +291,11 @@ private:
 
         vk::PhysicalDeviceFeatures features{};
 
+        vk::PhysicalDeviceTimelineSemaphoreFeatures timelineFeatures{};
+        timelineFeatures.timelineSemaphore = VK_TRUE;
+
         vk::DeviceCreateInfo createInfo{};
+        createInfo.pNext = &timelineFeatures;
         createInfo.queueCreateInfoCount = static_cast<uint32_t>(queueInfos.size());
         createInfo.pQueueCreateInfos = queueInfos.data();
         createInfo.enabledExtensionCount = 1;
@@ -277,6 +313,7 @@ private:
 
     vk::raii::Context m_context{};
     vk::raii::Instance m_instance{nullptr};
+    vk::raii::DebugUtilsMessengerEXT m_debugMessenger{nullptr};
     vk::raii::SurfaceKHR m_surface{nullptr};
 
     vk::raii::PhysicalDevice m_physicalDevice{nullptr};

@@ -1,0 +1,36 @@
+module;
+
+#include <GLFW/glfw3.h>
+
+export module Platform.GlfwContext;
+
+import std;
+
+export namespace platform
+{
+class GlfwContext
+{
+public:
+    GlfwContext()
+    {
+        if (not glfwInit())
+        {
+            throw std::runtime_error("Failed to initialize GLFW.");
+        }
+
+        if (not glfwVulkanSupported())
+        {
+            glfwTerminate();
+            throw std::runtime_error("GLFW reports that Vulkan is not supported.");
+        }
+    }
+
+    ~GlfwContext()
+    {
+        glfwTerminate();
+    }
+
+    GlfwContext(const GlfwContext&) = delete;
+    GlfwContext& operator=(const GlfwContext&) = delete;
+};
+}
