@@ -122,23 +122,28 @@ public:
     {
         const uint32_t outputBuffer = 1 - m_currentBuffer;
 
-        // Wait until graphics has finished reading the buffer
-        // that compute is about to overwrite.
-        const uint64_t graphicsWaitValue = m_lastGraphicsUse[outputBuffer];
-
-        if (graphicsWaitValue > 0)
+        for (uint32_t i = 0; i < 2; ++i)
         {
-            vk::Semaphore semaphore = *m_graphicsTimelineSemaphore;
+            const uint64_t graphicsWaitValue = m_lastGraphicsUse[i];
+
+            if (graphicsWaitValue == 0)
+                continue;
+
+            const vk::Semaphore semaphore = *m_graphicsTimelineSemaphore;
 
             vk::SemaphoreWaitInfo waitInfo{};
             waitInfo.semaphoreCount = 1;
             waitInfo.pSemaphores = &semaphore;
             waitInfo.pValues = &graphicsWaitValue;
 
-            const vk::Result result = m_device.waitSemaphores(waitInfo, UINT64_MAX);
+            const vk::Result result =
+                m_device.waitSemaphores(waitInfo, UINT64_MAX);
+
             if (result != vk::Result::eSuccess)
             {
-                throw std::runtime_error("Failed waiting for graphics timeline semaphore");
+                throw std::runtime_error(
+                    "Failed waiting for graphics timeline semaphore"
+                );
             }
         }
 
@@ -196,49 +201,86 @@ public:
 
     void dispatchCompute(vk::CommandBuffer commandBuffer, float deltaTime)
     {
-        const uint32_t outputBuffer = 1 - m_currentBuffer;
+        constexpr uint32_t COLLISION_ITERATIONS = 5;
+
+        struct SimulationParameters
+        {
+            float deltaTime;
+            uint32_t integrate;
+        };
 
         commandBuffer.bindPipeline(
             vk::PipelineBindPoint::eCompute,
             m_computePipeline->getPipeline()
         );
 
-        commandBuffer.bindDescriptorSets(
-            vk::PipelineBindPoint::eCompute,
-            m_computePipeline->getPipelineLayout(),
-            0,
-            m_computePipeline->getDescriptorSet(m_currentBuffer),
-            nullptr
-        );
+        uint32_t inputBuffer = m_currentBuffer;
 
-        deltaTime = std::clamp(deltaTime, 0.0f, 0.033f);
+        for (uint32_t iteration = 0; iteration < COLLISION_ITERATIONS; ++iteration)
+        {
+            const uint32_t outputBuffer = 1 - inputBuffer;
 
-        commandBuffer.pushConstants(
-            m_computePipeline->getPipelineLayout(),
-            vk::ShaderStageFlagBits::eCompute,
-            0,
-            sizeof(float),
-            &deltaTime
-        );
+            commandBuffer.bindDescriptorSets(
+                vk::PipelineBindPoint::eCompute,
+                m_computePipeline->getPipelineLayout(),
+                0,
+                m_computePipeline->getDescriptorSet(inputBuffer),
+                nullptr
+            );
 
-        commandBuffer.dispatch(
-            (PARTICLE_COUNT + WORKGROUP_SIZE - 1) / WORKGROUP_SIZE,
-            1,
-            1
-        );
+            SimulationParameters parameters{
+                std::clamp(deltaTime, 0.0f, 0.033f),
+                iteration == 0 ? 1u : 0u
+            };
+
+            commandBuffer.pushConstants(
+                m_computePipeline->getPipelineLayout(),
+                vk::ShaderStageFlagBits::eCompute,
+                0,
+                sizeof(parameters),
+                &parameters
+            );
+
+            commandBuffer.dispatch(
+                (PARTICLE_COUNT + WORKGROUP_SIZE - 1) / WORKGROUP_SIZE,
+                1,
+                1
+            );
+
+            vk::MemoryBarrier barrier{};
+
+            barrier.srcAccessMask = vk::AccessFlagBits::eShaderWrite;
+            barrier.dstAccessMask = vk::AccessFlagBits::eShaderRead;
+
+            commandBuffer.pipelineBarrier(
+                vk::PipelineStageFlagBits::eComputeShader,
+                vk::PipelineStageFlagBits::eComputeShader,
+                {},
+                barrier,
+                nullptr,
+                nullptr
+            );
+
+            inputBuffer = outputBuffer;
+        }
+
+        m_currentBuffer = inputBuffer;
 
         vk::BufferMemoryBarrier barrier{};
+
         barrier.srcAccessMask = vk::AccessFlagBits::eShaderWrite;
         barrier.dstAccessMask = vk::AccessFlagBits::eVertexAttributeRead | vk::AccessFlagBits::eShaderRead;
+
         barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
         barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        barrier.buffer = m_buffers->get(outputBuffer);
+
+        barrier.buffer = *m_buffers->get(m_currentBuffer);
         barrier.offset = 0;
         barrier.size = sizeof(Particle) * PARTICLE_COUNT;
 
         commandBuffer.pipelineBarrier(
             vk::PipelineStageFlagBits::eComputeShader,
-            vk::PipelineStageFlagBits::eVertexInput | vk::PipelineStageFlagBits::eVertexShader | vk::PipelineStageFlagBits::eComputeShader,
+            vk::PipelineStageFlagBits::eVertexInput | vk::PipelineStageFlagBits::eVertexShader,
             {},
             nullptr,
             barrier,

@@ -60,9 +60,9 @@ private:
 
     void createDescriptorSetLayout()
     {
-        std::array<vk::DescriptorSetLayoutBinding, 2> bindings{};
+        std::array<vk::DescriptorSetLayoutBinding, 3> bindings{};
 
-        for (uint32_t i = 0; i < 2; ++i)
+        for (uint32_t i = 0; i < 3; ++i)
         {
             bindings[i].binding = i;
             bindings[i].descriptorType = vk::DescriptorType::eStorageBuffer;
@@ -81,7 +81,7 @@ private:
     {
         vk::DescriptorPoolSize poolSize{};
         poolSize.type = vk::DescriptorType::eStorageBuffer;
-        poolSize.descriptorCount = 4;
+        poolSize.descriptorCount = 6;
 
         vk::DescriptorPoolCreateInfo info{};
         info.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet;
@@ -145,7 +145,7 @@ private:
     {
         vk::PushConstantRange pushConstant{};
         pushConstant.stageFlags = vk::ShaderStageFlagBits::eCompute;
-        pushConstant.size = sizeof(float);
+        pushConstant.size = sizeof(float) + sizeof(uint32_t);
 
         const vk::DescriptorSetLayout descriptorLayout = *m_descriptorSetLayout;
 
