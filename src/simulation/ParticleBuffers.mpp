@@ -1,0 +1,226 @@
+module;
+
+#include <vulkan/vulkan_raii.hpp>
+
+export module Simulation.ParticleBuffers;
+
+import std;
+import Simulation.Particle;
+
+export namespace simulation
+{
+class ParticleBuffers
+{
+public:
+    ParticleBuffers(
+        const vk::raii::Device& device,
+        vk::PhysicalDevice physicalDevice,
+        const vk::raii::Queue& queue,
+        vk::CommandPool commandPool,
+        uint32_t queueFamilyIndex,
+        const std::vector<Particle>& particles
+    )
+        : m_device(device),
+          m_physicalDevice(physicalDevice),
+          m_queue(queue),
+          m_commandPool(commandPool)
+    {
+        m_size = sizeof(Particle) * particles.size();
+
+        createBuffers();
+        upload(particles);
+    }
+
+    ParticleBuffers(const ParticleBuffers&) = delete;
+    ParticleBuffers& operator=(const ParticleBuffers&) = delete;
+
+    [[nodiscard]] const vk::raii::Buffer& get(uint32_t index) const
+    {
+        return m_buffers[index];
+    }
+
+    [[nodiscard]] const std::array<vk::raii::Buffer, 2>& getBuffers() const
+    {
+        return m_buffers;
+    }
+
+private:
+    const vk::raii::Device& m_device;
+    vk::PhysicalDevice m_physicalDevice;
+    const vk::raii::Queue& m_queue;
+    vk::CommandPool m_commandPool;
+
+    vk::DeviceSize m_size = 0;
+
+    std::array<vk::raii::Buffer, 2> m_buffers{nullptr, nullptr};
+
+    vk::raii::Semaphore m_computeTimelineSemaphore{nullptr};
+
+    vk::raii::Semaphore m_graphicsTimelineSemaphore{nullptr};
+
+    std::array<uint64_t, 2> m_lastGraphicsUse{0, 0};
+
+    uint64_t m_computeTimelineValue = 0;
+    uint64_t m_graphicsTimelineValue = 0;
+
+    std::array<vk::raii::DeviceMemory, 2> m_memory{
+        nullptr, nullptr
+    };
+
+    uint32_t findMemoryType(
+        uint32_t typeFilter,
+        vk::MemoryPropertyFlags properties
+    ) const
+    {
+        const auto memoryProperties =
+            m_physicalDevice.getMemoryProperties();
+
+        for (uint32_t i = 0; i < memoryProperties.memoryTypeCount; ++i)
+        {
+            const bool supported = typeFilter & (1u << i);
+
+            const bool suitable =
+                (memoryProperties.memoryTypes[i].propertyFlags
+                 & properties) == properties;
+
+            if (supported && suitable)
+                return i;
+        }
+
+        throw std::runtime_error("No suitable Vulkan memory type.");
+    }
+
+    void createBuffer(
+        vk::DeviceSize size,
+        vk::BufferUsageFlags usage,
+        vk::MemoryPropertyFlags properties,
+        vk::raii::Buffer& buffer,
+        vk::raii::DeviceMemory& memory
+    )
+    {
+        vk::BufferCreateInfo bufferInfo{};
+        bufferInfo.size = size;
+        bufferInfo.usage = usage;
+        bufferInfo.sharingMode = vk::SharingMode::eExclusive;
+
+        buffer = vk::raii::Buffer(m_device, bufferInfo);
+
+        const auto requirements = buffer.getMemoryRequirements();
+
+        vk::MemoryAllocateInfo allocationInfo{};
+        allocationInfo.allocationSize = requirements.size;
+        allocationInfo.memoryTypeIndex = findMemoryType(
+            requirements.memoryTypeBits,
+            properties
+        );
+
+        memory = vk::raii::DeviceMemory(m_device, allocationInfo);
+        buffer.bindMemory(*memory, 0);
+    }
+
+    void createBuffers()
+    {
+        constexpr auto usage =
+            vk::BufferUsageFlagBits::eStorageBuffer |
+            vk::BufferUsageFlagBits::eVertexBuffer |
+            vk::BufferUsageFlagBits::eTransferDst;
+
+        for (uint32_t i = 0; i < 2; ++i)
+        {
+            createBuffer(
+                m_size,
+                usage,
+                vk::MemoryPropertyFlagBits::eDeviceLocal,
+                m_buffers[i],
+                m_memory[i]
+            );
+        }
+    }
+
+    void upload(const std::vector<Particle>& particles)
+    {
+        vk::raii::Buffer stagingBuffer{nullptr};
+        vk::raii::DeviceMemory stagingMemory{nullptr};
+
+        createBuffer(
+            m_size,
+            vk::BufferUsageFlagBits::eTransferSrc,
+            vk::MemoryPropertyFlagBits::eHostVisible |
+            vk::MemoryPropertyFlagBits::eHostCoherent,
+            stagingBuffer,
+            stagingMemory
+        );
+
+        std::memcpy(
+            stagingMemory.mapMemory(0, m_size),
+            particles.data(),
+            static_cast<size_t>(m_size)
+        );
+
+        stagingMemory.unmapMemory();
+
+        vk::CommandBufferAllocateInfo allocationInfo{};
+        allocationInfo.commandPool = m_commandPool;
+        allocationInfo.level = vk::CommandBufferLevel::ePrimary;
+        allocationInfo.commandBufferCount = 1;
+
+        auto commandBuffers = m_device.allocateCommandBuffers(allocationInfo);
+        auto& commandBuffer = commandBuffers.front();
+
+        commandBuffer.begin({
+            vk::CommandBufferUsageFlagBits::eOneTimeSubmit
+        });
+
+        for (const auto& destination : m_buffers)
+        {
+            vk::BufferCopy copy{};
+            copy.size = m_size;
+
+            commandBuffer.copyBuffer(
+                *stagingBuffer,
+                *destination,
+                copy
+            );
+        }
+
+        std::vector<vk::BufferMemoryBarrier> barriers;
+
+        for (const auto& destination : m_buffers)
+        {
+            vk::BufferMemoryBarrier barrier{};
+
+            barrier.srcAccessMask = vk::AccessFlagBits::eTransferWrite;
+            barrier.dstAccessMask = vk::AccessFlagBits::eVertexAttributeRead;
+
+            barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+
+            barrier.buffer = *destination;
+            barrier.offset = 0;
+            barrier.size = m_size;
+
+            barriers.push_back(barrier);
+        }
+
+        commandBuffer.pipelineBarrier(
+            vk::PipelineStageFlagBits::eTransfer,
+            vk::PipelineStageFlagBits::eVertexInput,
+            {},
+            nullptr,
+            barriers,
+            nullptr
+        );
+
+        commandBuffer.end();
+
+        const vk::CommandBuffer rawCommandBuffer = *commandBuffer;
+
+        vk::SubmitInfo submitInfo{};
+        submitInfo.commandBufferCount = 1;
+        submitInfo.pCommandBuffers = &rawCommandBuffer;
+
+        m_queue.submit(submitInfo, nullptr);
+        m_queue.waitIdle();
+    }
+};
+}

@@ -1,8 +1,8 @@
-export module Logger;
+export module Core.Logger;
 
 import std;
 
-namespace Logger
+namespace core::logger
 {
     void init();
     void shutdown();

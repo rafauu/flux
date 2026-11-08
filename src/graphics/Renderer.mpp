@@ -1,0 +1,334 @@
+module;
+
+#include <vulkan/vulkan_raii.hpp>
+
+export module Graphics.Renderer;
+
+import std;
+import Core.Logger;
+import Graphics.VulkanContext;
+import Graphics.Swapchain;
+import Graphics.GraphicsPipeline;
+import Graphics.FrameSync;
+import Platform.Window;
+import Simulation.ParticleSystem;
+
+namespace logger = core::logger;
+
+export namespace graphics
+{
+class Renderer
+{
+public:
+    Renderer(VulkanContext& context, platform::Window& window)
+        : m_context(context),
+          m_window(window),
+          m_swapchain(context, window),
+          m_graphicsPipeline(m_context, m_swapchain),
+          m_frameSync(m_context)
+    {
+        logger::info("Initializing Renderer...");
+
+        m_swapchain.createFramebuffers(m_graphicsPipeline.getRenderPass());
+
+        createCommandPool();
+        createCommandBuffers();
+
+        m_frameSync.resetImages(m_swapchain.getImages().size());
+    }
+
+    Renderer(const Renderer&) = delete;
+    Renderer& operator=(const Renderer&) = delete;
+
+    void drawFrame(simulation::ParticleSystem& particleSystem)
+    {
+        m_frameSync.waitForCurrentFrame();
+
+        const AcquiredImage acquired = acquireNextImage();
+
+        if (acquired.index == UINT32_MAX)
+        {
+            recreateSwapchain();
+            return;
+        }
+
+        const uint32_t imageIndex = acquired.index;
+
+        m_frameSync.waitForImage(imageIndex);
+        m_frameSync.associateImage(imageIndex);
+
+        recordCommandBuffer(imageIndex, particleSystem);
+
+        submitFrame(imageIndex, particleSystem);
+
+        const bool presentSuboptimal = presentFrame(imageIndex);
+
+        if (acquired.suboptimal ||
+            presentSuboptimal ||
+            m_window.wasResized())
+        {
+            m_window.resetResizeFlag();
+            recreateSwapchain();
+        }
+
+        m_frameSync.advanceFrame();
+    }
+
+    void recreateSwapchain()
+    {
+        while (!m_window.shouldClose() && !isDrawable())
+            m_window.waitEvents();
+
+        if (m_window.shouldClose())
+            return;
+
+        m_context.waitIdle();
+
+        m_commandBuffers.clear();
+        m_swapchain.destroyFramebuffers();
+
+        m_swapchain.recreate();
+
+        m_graphicsPipeline.recreate(m_swapchain);
+
+        m_swapchain.createFramebuffers(
+            m_graphicsPipeline.getRenderPass()
+        );
+
+        createCommandBuffers();
+
+        m_frameSync.resetImages(
+            m_swapchain.getImages().size()
+        );
+
+        logger::info("Swapchain recreated.");
+    }
+
+    [[nodiscard]] bool isDrawable() const
+    {
+        const auto extent = m_window.getFramebufferSize();
+        return extent.width > 0 && extent.height > 0;
+    }
+
+private:
+    struct AcquiredImage
+    {
+        uint32_t index;
+        bool suboptimal;
+    };
+
+    void createCommandPool()
+    {
+        vk::CommandPoolCreateInfo info{};
+        info.flags = vk::CommandPoolCreateFlagBits::eResetCommandBuffer;
+        info.queueFamilyIndex = m_context.graphicsQueueFamilyIndex();
+
+        m_commandPool = vk::raii::CommandPool(m_context.device(), info);
+    }
+
+    void createCommandBuffers()
+    {
+        vk::CommandBufferAllocateInfo info{};
+        info.commandPool = *m_commandPool;
+        info.level = vk::CommandBufferLevel::ePrimary;
+        info.commandBufferCount = static_cast<uint32_t>(m_swapchain.getImages().size());
+
+        m_commandBuffers = m_context.device().allocateCommandBuffers(info);
+    }
+
+    AcquiredImage acquireNextImage()
+    {
+        auto [result, imageIndex] =
+            m_swapchain.getHandle().acquireNextImage(
+                UINT64_MAX,
+                m_frameSync.getImageAvailableSemaphore(),
+                nullptr
+            );
+
+        if (result == vk::Result::eErrorOutOfDateKHR)
+        {
+            return {UINT32_MAX, false};
+        }
+
+        if (result != vk::Result::eSuccess &&
+            result != vk::Result::eSuboptimalKHR)
+        {
+            throw std::runtime_error("Failed to acquire swapchain image.");
+        }
+
+        return {
+            imageIndex,
+            result == vk::Result::eSuboptimalKHR
+        };
+    }
+
+    void recordCommandBuffer(uint32_t imageIndex, const simulation::ParticleSystem& particleSystem)
+    {
+        auto& commandBuffer = m_commandBuffers[imageIndex];
+
+        commandBuffer.reset();
+
+        vk::CommandBufferBeginInfo beginInfo{};
+        beginInfo.flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit;
+
+        commandBuffer.begin(beginInfo);
+
+        vk::ClearValue clearValue{};
+        clearValue.color = vk::ClearColorValue(
+            std::array<float, 4>{
+                0.01f, 0.01f, 0.03f, 1.0f
+            }
+        );
+
+        vk::RenderPassBeginInfo renderPassInfo{};
+        renderPassInfo.renderPass = m_graphicsPipeline.getRenderPass();
+        renderPassInfo.framebuffer = *m_swapchain.getFramebuffers()[imageIndex];
+        renderPassInfo.renderArea.extent = m_swapchain.getExtent();
+        renderPassInfo.clearValueCount = 1;
+        renderPassInfo.pClearValues = &clearValue;
+
+        commandBuffer.beginRenderPass(renderPassInfo, vk::SubpassContents::eInline);
+
+        commandBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, m_graphicsPipeline.getHandle());
+
+        const auto extent = m_swapchain.getExtent();
+
+        vk::Viewport viewport{};
+        viewport.width = static_cast<float>(extent.width);
+        viewport.height = static_cast<float>(extent.height);
+        viewport.maxDepth = 1.0f;
+
+        vk::Rect2D scissor{};
+        scissor.extent = extent;
+
+        commandBuffer.setViewport(0, viewport);
+        commandBuffer.setScissor(0, scissor);
+
+        const vk::DeviceSize offset = 0;
+
+        commandBuffer.bindVertexBuffers(
+            0,
+            *particleSystem.getCurrentBuffer(),
+            offset
+        );
+
+        commandBuffer.draw(
+            simulation::ParticleSystem::count(),
+            1,
+            0,
+            0
+        );
+
+        commandBuffer.endRenderPass();
+        commandBuffer.end();
+    }
+
+    void submitFrame(uint32_t imageIndex, simulation::ParticleSystem& particleSystem)
+    {
+        const uint32_t particleBufferIndex = particleSystem.currentBufferIndex();
+
+        const vk::PipelineStageFlags waitStages[] =
+        {
+            vk::PipelineStageFlagBits::eColorAttachmentOutput,
+            vk::PipelineStageFlagBits::eVertexInput
+        };
+
+        const vk::Semaphore waitSemaphores[] =
+        {
+            m_frameSync.getImageAvailableSemaphore(),
+            particleSystem.getComputeTimelineSemaphore()
+        };
+
+        const uint64_t waitValues[] =
+        {
+            0,
+            particleSystem.getComputeTimelineValue()
+        };
+
+        const vk::Semaphore signalSemaphores[] =
+        {
+            m_frameSync.getRenderFinishedSemaphore(),
+            particleSystem.getGraphicsTimelineSemaphore()
+        };
+
+        const uint64_t signalValues[] =
+        {
+            0,
+            particleSystem.nextGraphicsTimelineValue()
+        };
+
+        const vk::CommandBuffer commandBuffer =
+            *m_commandBuffers[imageIndex];
+
+        vk::TimelineSemaphoreSubmitInfo timelineInfo{};
+
+        timelineInfo.waitSemaphoreValueCount = 2;
+        timelineInfo.pWaitSemaphoreValues = waitValues;
+
+        timelineInfo.signalSemaphoreValueCount = 2;
+        timelineInfo.pSignalSemaphoreValues = signalValues;
+
+        vk::SubmitInfo info{};
+
+        info.pNext = &timelineInfo;
+
+        info.waitSemaphoreCount = 2;
+        info.pWaitSemaphores = waitSemaphores;
+        info.pWaitDstStageMask = waitStages;
+
+        info.commandBufferCount = 1;
+        info.pCommandBuffers = &commandBuffer;
+
+        info.signalSemaphoreCount = 2;
+        info.pSignalSemaphores = signalSemaphores;
+
+        m_frameSync.resetCurrentFence();
+
+        m_context.graphicsQueue().submit(
+            info,
+            m_frameSync.getCurrentFence()
+        );
+
+        particleSystem.setLastGraphicsUse(
+            particleBufferIndex,
+            particleSystem.getGraphicsTimelineValue()
+        );
+    }
+
+    bool presentFrame(uint32_t imageIndex)
+    {
+        const vk::Semaphore waitSemaphore = m_frameSync.getRenderFinishedSemaphore();
+
+        const vk::SwapchainKHR swapchain = *m_swapchain.getHandle();
+
+        vk::PresentInfoKHR info{};
+
+        info.waitSemaphoreCount = 1;
+        info.pWaitSemaphores = &waitSemaphore;
+
+        info.swapchainCount = 1;
+        info.pSwapchains = &swapchain;
+        info.pImageIndices = &imageIndex;
+
+        try
+        {
+            return m_context.presentQueue().presentKHR(info) == vk::Result::eSuboptimalKHR;
+        }
+        catch (const vk::OutOfDateKHRError&)
+        {
+            return true;
+        }
+    }
+
+private:
+    VulkanContext& m_context;
+    platform::Window& m_window;
+
+    Swapchain m_swapchain;
+    GraphicsPipeline m_graphicsPipeline;
+    FrameSync m_frameSync;
+
+    vk::raii::CommandPool m_commandPool{nullptr};
+    std::vector<vk::raii::CommandBuffer> m_commandBuffers;
+};
+}

@@ -1,0 +1,128 @@
+module;
+
+#include <vulkan/vulkan_raii.hpp>
+
+export module Graphics.FrameSync;
+
+import std;
+import Graphics.VulkanContext;
+
+export namespace graphics
+{
+class FrameSync
+{
+public:
+    static constexpr uint32_t MAX_FRAMES_IN_FLIGHT = 2;
+
+    explicit FrameSync(VulkanContext& context)
+        : m_context(context)
+    {
+        createSyncObjects();
+    }
+
+    FrameSync(const FrameSync&) = delete;
+    FrameSync& operator=(const FrameSync&) = delete;
+
+    void waitForCurrentFrame() const
+    {
+        const auto result = m_context.device().waitForFences(
+            *m_inFlightFences[m_currentFrame],
+            VK_TRUE,
+            UINT64_MAX
+        );
+
+        if (result != vk::Result::eSuccess)
+        {
+            throw std::runtime_error("Failed waiting for current frame fence.");
+        }
+    }
+
+    void waitForImage(uint32_t imageIndex) const
+    {
+        const vk::Fence fence = m_imagesInFlight.at(imageIndex);
+
+        if (not fence)
+        {
+            return;
+        }
+
+        const auto result = m_context.device().waitForFences(
+            fence,
+            VK_TRUE,
+            UINT64_MAX
+        );
+
+        if (result != vk::Result::eSuccess)
+        {
+            throw std::runtime_error("Failed waiting for image fence.");
+        }
+    }
+
+    void associateImage(uint32_t imageIndex)
+    {
+        m_imagesInFlight.at(imageIndex) = *m_inFlightFences[m_currentFrame];
+    }
+
+    void resetCurrentFence()
+    {
+        m_context.device().resetFences(*m_inFlightFences[m_currentFrame]);
+    }
+
+    void advanceFrame()
+    {
+        m_currentFrame = (m_currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
+    }
+
+    void resetImages(size_t imageCount)
+    {
+        m_imagesInFlight.assign(imageCount, vk::Fence{});
+    }
+
+    [[nodiscard]] vk::Semaphore getImageAvailableSemaphore() const
+    {
+        return *m_imageAvailableSemaphores[m_currentFrame];
+    }
+
+    [[nodiscard]] vk::Semaphore getRenderFinishedSemaphore() const
+    {
+        return *m_renderFinishedSemaphores[m_currentFrame];
+    }
+
+    [[nodiscard]] vk::Fence getCurrentFence() const
+    {
+        return *m_inFlightFences[m_currentFrame];
+    }
+
+    [[nodiscard]] uint32_t getCurrentFrame() const
+    {
+        return m_currentFrame;
+    }
+
+private:
+    void createSyncObjects()
+    {
+        vk::SemaphoreCreateInfo semaphoreInfo{};
+
+        vk::FenceCreateInfo fenceInfo{};
+        fenceInfo.flags = vk::FenceCreateFlagBits::eSignaled;
+
+        for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i)
+        {
+            m_imageAvailableSemaphores[i] = vk::raii::Semaphore(m_context.device(), semaphoreInfo);
+            m_renderFinishedSemaphores[i] = vk::raii::Semaphore(m_context.device(), semaphoreInfo);
+            m_inFlightFences[i] = vk::raii::Fence(m_context.device(), fenceInfo);
+        }
+    }
+
+private:
+    VulkanContext& m_context;
+
+    std::array<vk::raii::Semaphore, MAX_FRAMES_IN_FLIGHT> m_imageAvailableSemaphores{nullptr, nullptr};
+    std::array<vk::raii::Semaphore, MAX_FRAMES_IN_FLIGHT> m_renderFinishedSemaphores{nullptr, nullptr};
+    std::array<vk::raii::Fence, MAX_FRAMES_IN_FLIGHT> m_inFlightFences{nullptr, nullptr};
+
+    std::vector<vk::Fence> m_imagesInFlight;
+
+    uint32_t m_currentFrame = 0;
+};
+}

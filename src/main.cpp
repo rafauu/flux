@@ -1,21 +1,22 @@
 #include <cstdlib>
 
 import std;
-import App;
-import Logger;
+import App.Application;
+import Core.Logger;
+
+namespace logger = core::logger;
 
 int main()
 {
+    logger::Guard _{};
+
     try
     {
-        Logger::Guard _{};
-
-        App app{};
-        app.run();
+        app::Application{}.run();
     }
     catch (const std::exception& ex)
     {
-        Logger::error("Fatal error: {}", ex.what());
+        logger::error("Fatal error: {}", ex.what());
         return EXIT_FAILURE;
     }
 

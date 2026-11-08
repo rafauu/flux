@@ -1,0 +1,15 @@
+module;
+
+#include <glm/glm.hpp>
+
+export module Simulation.Particle;
+
+export namespace simulation
+{
+struct Particle
+{
+    glm::vec2 position;
+    glm::vec2 velocity;
+    glm::vec4 color;
+};
+}

@@ -1,0 +1,89 @@
+module;
+
+#include <GLFW/glfw3.h>
+#include <vulkan/vulkan_raii.hpp>
+
+export module App.Application;
+
+import std;
+import Core.Logger;
+import Graphics.Renderer;
+import Graphics.VulkanContext;
+import Platform.Window;
+import Simulation.ParticleSystem;
+
+namespace logger = core::logger;
+
+export namespace app
+{
+class Application
+{
+public:
+    Application()
+        : m_window(1920, 1080, "Flux Particle Simulation"),
+          m_vulkanContext(m_window, "Flux"),
+          m_renderer(m_vulkanContext, m_window),
+          m_particleSystem(m_vulkanContext)
+    {
+        logger::info("Initializing Flux...");
+    }
+
+    ~Application() = default;
+
+    Application(const Application&) = delete;
+    Application& operator=(const Application&) = delete;
+
+    void run()
+    {
+        logger::info("Starting Flux...");
+
+        mainLoop();
+        m_vulkanContext.waitIdle();
+
+        logger::info("Shutting down Flux...");
+    }
+
+private:
+    void mainLoop()
+    {
+        using Clock = std::chrono::steady_clock;
+
+        auto previousTime = Clock::now();
+
+        while (!m_window.shouldClose())
+        {
+            m_window.pollEvents();
+
+            if (!m_renderer.isDrawable())
+            {
+                previousTime = Clock::now();
+                continue;
+            }
+
+            const auto currentTime = Clock::now();
+            const float deltaTime = std::chrono::duration<float>(currentTime - previousTime).count();
+
+            previousTime = currentTime;
+
+            update(deltaTime);
+            drawFrame();
+        }
+    }
+
+    void update(float deltaTime)
+    {
+        m_particleSystem.update(deltaTime);
+    }
+
+    void drawFrame()
+    {
+        m_renderer.drawFrame(m_particleSystem);
+    }
+
+private:
+    platform::Window m_window;
+    graphics::VulkanContext m_vulkanContext;
+    graphics::Renderer m_renderer;
+    simulation::ParticleSystem m_particleSystem;
+};
+}

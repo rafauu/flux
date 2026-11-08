@@ -1,0 +1,290 @@
+module;
+
+#define GLFW_INCLUDE_VULKAN
+#include <GLFW/glfw3.h>
+#include <vulkan/vulkan_raii.hpp>
+
+export module Graphics.VulkanContext;
+
+import std;
+import Core.Logger;
+import Platform.Window;
+
+namespace logger = core::logger;
+
+export namespace graphics
+{
+class VulkanContext
+{
+private:
+    struct QueueFamilyIndices
+    {
+        uint32_t graphics = UINT32_MAX;
+        uint32_t present  = UINT32_MAX;
+        uint32_t compute  = UINT32_MAX;
+
+        [[nodiscard]] bool isComplete() const
+        {
+            return graphics != UINT32_MAX and
+                   present  != UINT32_MAX and
+                   compute  != UINT32_MAX;
+        }
+    };
+
+public:
+    VulkanContext(platform::Window& window, std::string_view applicationName)
+        : m_window(window)
+    {
+        logger::info("Initializing Vulkan...");
+
+        createInstance(applicationName);
+        createSurface();
+        selectPhysicalDevice();
+        createLogicalDevice();
+
+        logger::info("Vulkan initialized successfully.");
+    }
+
+    ~VulkanContext() = default;
+
+    VulkanContext(const VulkanContext&) = delete;
+    VulkanContext& operator=(const VulkanContext&) = delete;
+
+    [[nodiscard]] const vk::raii::Instance& instance() const
+    {
+        return m_instance;
+    }
+
+    [[nodiscard]] const vk::raii::SurfaceKHR& surface() const
+    {
+        return m_surface;
+    }
+
+    [[nodiscard]] const vk::raii::PhysicalDevice& physicalDevice() const
+    {
+        return m_physicalDevice;
+    }
+
+    [[nodiscard]] const vk::raii::Device& device() const
+    {
+        return m_device;
+    }
+
+    [[nodiscard]] const vk::raii::Queue& graphicsQueue() const
+    {
+        return m_graphicsQueue;
+    }
+
+    [[nodiscard]] const vk::raii::Queue& presentQueue() const
+    {
+        return m_presentQueue;
+    }
+
+    [[nodiscard]] const vk::raii::Queue& computeQueue() const
+    {
+        return m_computeQueue;
+    }
+
+    [[nodiscard]] uint32_t graphicsQueueFamilyIndex() const
+    {
+        return m_queueFamilyIndices.graphics;
+    }
+
+    [[nodiscard]] uint32_t presentQueueFamilyIndex() const
+    {
+        return m_queueFamilyIndices.present;
+    }
+
+    [[nodiscard]] uint32_t computeQueueFamilyIndex() const
+    {
+        return m_queueFamilyIndices.compute;
+    }
+
+    [[nodiscard]] const QueueFamilyIndices& queueFamilyIndices() const
+    {
+        return m_queueFamilyIndices;
+    }
+
+    void waitIdle() const
+    {
+        m_device.waitIdle();
+    }
+
+private:
+    void createInstance(std::string_view applicationName)
+    {
+        vk::ApplicationInfo appInfo{
+            applicationName.data(),
+            VK_MAKE_VERSION(1, 0, 0),
+            "Flux",
+            VK_MAKE_VERSION(1, 0, 0),
+            VK_API_VERSION_1_2
+        };
+
+        uint32_t extensionCount = 0;
+        const auto* glfwExtensions = glfwGetRequiredInstanceExtensions(&extensionCount);
+
+        if (not glfwExtensions or not extensionCount)
+        {
+            throw std::runtime_error("Failed to get GLFW Vulkan extensions.");
+        }
+
+        vk::InstanceCreateInfo createInfo{};
+        createInfo.pApplicationInfo = &appInfo;
+        createInfo.enabledExtensionCount = extensionCount;
+        createInfo.ppEnabledExtensionNames = glfwExtensions;
+
+        m_instance = vk::raii::Instance(m_context, createInfo);
+    }
+
+    void createSurface()
+    {
+        VkSurfaceKHR surface{};
+
+        if (glfwCreateWindowSurface(*m_instance, m_window.getNativeHandle(), nullptr, &surface) != VK_SUCCESS)
+        {
+            throw std::runtime_error("Failed to create Vulkan surface.");
+        }
+
+        m_surface = vk::raii::SurfaceKHR(m_instance, surface);
+    }
+
+    void selectPhysicalDevice()
+    {
+        for (const auto& device : m_instance.enumeratePhysicalDevices())
+        {
+            if (not isDeviceSuitable(device))
+            {
+                continue;
+            }
+
+            m_physicalDevice = device;
+
+            logger::info("Selected GPU: {}", std::string_view{device.getProperties().deviceName});
+            return;
+        }
+
+        throw std::runtime_error("No suitable Vulkan GPU found.");
+    }
+
+    [[nodiscard]] bool isDeviceSuitable(const vk::raii::PhysicalDevice& device)
+    {
+        if (device.getProperties().deviceType != vk::PhysicalDeviceType::eDiscreteGpu)
+        {
+            return false;
+        }
+
+        const auto indices = findQueueFamilies(device);
+
+        if (not indices.isComplete() or not checkDeviceExtensionSupport(device))
+        {
+            return false;
+        }
+
+        if (device.getSurfaceFormatsKHR(*m_surface).empty() or device.getSurfacePresentModesKHR(*m_surface).empty())
+        {
+            return false;
+        }
+
+        m_queueFamilyIndices = indices;
+        return true;
+    }
+
+    [[nodiscard]] QueueFamilyIndices findQueueFamilies(const vk::raii::PhysicalDevice& device) const
+    {
+        QueueFamilyIndices indices{};
+        const auto families = device.getQueueFamilyProperties();
+
+        for (uint32_t i = 0; i < families.size(); ++i)
+        {
+            const auto& flags = families[i].queueFlags;
+
+            if (!families[i].queueCount)
+                continue;
+
+            if ((flags & vk::QueueFlagBits::eGraphics) and (flags & vk::QueueFlagBits::eCompute))
+            {
+                indices.graphics = i;
+                indices.compute = i;
+            }
+
+            if (device.getSurfaceSupportKHR(i, *m_surface))
+                indices.present = i;
+
+            if (indices.isComplete())
+                break;
+        }
+
+        return indices;
+    }
+
+    [[nodiscard]] bool checkDeviceExtensionSupport(const vk::raii::PhysicalDevice& device) const
+    {
+        const auto available = device.enumerateDeviceExtensionProperties();
+
+        return std::ranges::any_of(available, [](const auto& extension)
+        {
+            return std::strcmp(
+                extension.extensionName.data(),
+                VK_KHR_SWAPCHAIN_EXTENSION_NAME
+            ) == 0;
+        });
+    }
+
+    void createLogicalDevice()
+    {
+        const std::set<uint32_t> families{
+            m_queueFamilyIndices.graphics,
+            m_queueFamilyIndices.present,
+            m_queueFamilyIndices.compute
+        };
+
+        constexpr float priority = 1.0f;
+
+        std::vector<vk::DeviceQueueCreateInfo> queueInfos;
+
+        for (const auto family : families)
+        {
+            queueInfos.emplace_back(
+                vk::DeviceQueueCreateFlags{},
+                family,
+                1,
+                &priority
+            );
+        }
+
+        constexpr const char* extensions[] = {
+            VK_KHR_SWAPCHAIN_EXTENSION_NAME
+        };
+
+        vk::PhysicalDeviceFeatures features{};
+
+        vk::DeviceCreateInfo createInfo{};
+        createInfo.queueCreateInfoCount = static_cast<uint32_t>(queueInfos.size());
+        createInfo.pQueueCreateInfos = queueInfos.data();
+        createInfo.enabledExtensionCount = 1;
+        createInfo.ppEnabledExtensionNames = extensions;
+        createInfo.pEnabledFeatures = &features;
+
+        m_device = vk::raii::Device(m_physicalDevice, createInfo);
+
+        m_graphicsQueue = vk::raii::Queue(m_device, m_queueFamilyIndices.graphics, 0);
+        m_presentQueue = vk::raii::Queue(m_device, m_queueFamilyIndices.present, 0);
+        m_computeQueue = vk::raii::Queue( m_device, m_queueFamilyIndices.compute, 0);
+    }
+
+    platform::Window& m_window;
+
+    vk::raii::Context m_context{};
+    vk::raii::Instance m_instance{nullptr};
+    vk::raii::SurfaceKHR m_surface{nullptr};
+
+    vk::raii::PhysicalDevice m_physicalDevice{nullptr};
+    vk::raii::Device m_device{nullptr};
+
+    vk::raii::Queue m_graphicsQueue{nullptr};
+    vk::raii::Queue m_presentQueue{nullptr};
+    vk::raii::Queue m_computeQueue{nullptr};
+    QueueFamilyIndices m_queueFamilyIndices{};
+};
+}

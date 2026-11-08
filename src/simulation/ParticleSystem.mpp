@@ -1,0 +1,296 @@
+module;
+
+#include <vulkan/vulkan_raii.hpp>
+
+export module Simulation.ParticleSystem;
+
+import std;
+import Core.Logger;
+import Graphics.VulkanContext;
+import Simulation.ComputePipeline;
+import Simulation.Particle;
+import Simulation.ParticleBuffers;
+import Simulation.ParticleGenerator;
+
+namespace logger = core::logger;
+
+export namespace simulation
+{
+class ParticleSystem
+{
+public:
+    static constexpr uint32_t PARTICLE_COUNT = 2000;
+    static constexpr uint32_t WORKGROUP_SIZE = 256;
+
+    explicit ParticleSystem(graphics::VulkanContext& context)
+        : m_device(context.device()),
+          m_queue(context.computeQueue()),
+          m_computeQueueFamilyIndex(context.computeQueueFamilyIndex())
+    {
+        logger::info("Initializing {} particles...", PARTICLE_COUNT);
+
+        createCommandPool();
+
+        const auto particles =
+            ParticleGenerator::generate(PARTICLE_COUNT);
+
+        m_buffers = std::make_unique<ParticleBuffers>(
+            m_device,
+            *context.physicalDevice(),
+            m_queue,
+            *m_commandPool,
+            m_computeQueueFamilyIndex,
+            particles
+        );
+
+        m_computePipeline = std::make_unique<ComputePipeline>(
+            m_device,
+            m_buffers->getBuffers(),
+            PARTICLE_COUNT
+        );
+
+        vk::SemaphoreTypeCreateInfo timelineInfo{};
+        timelineInfo.semaphoreType = vk::SemaphoreType::eTimeline;
+        timelineInfo.initialValue = 0;
+
+        vk::SemaphoreCreateInfo semaphoreInfo{};
+        semaphoreInfo.pNext = &timelineInfo;
+
+        m_computeTimelineSemaphore = vk::raii::Semaphore(m_device, semaphoreInfo);
+        m_graphicsTimelineSemaphore = vk::raii::Semaphore(m_device, semaphoreInfo);
+
+        logger::info("Particle system initialized.");
+    }
+
+    ParticleSystem(const ParticleSystem&) = delete;
+    ParticleSystem& operator=(const ParticleSystem&) = delete;
+
+    [[nodiscard]] static constexpr uint32_t count()
+    {
+        return PARTICLE_COUNT;
+    }
+
+    [[nodiscard]] const vk::raii::Buffer& getCurrentBuffer() const
+    {
+        return m_buffers->get(m_currentBuffer);
+    }
+
+    [[nodiscard]] vk::Buffer getParticleBuffer() const
+    {
+        return *getCurrentBuffer();
+    }
+
+    [[nodiscard]] uint32_t currentBufferIndex() const
+    {
+        return m_currentBuffer;
+    }
+
+    vk::Semaphore getComputeTimelineSemaphore() const
+    {
+        return *m_computeTimelineSemaphore;
+    }
+
+    vk::Semaphore getGraphicsTimelineSemaphore() const
+    {
+        return *m_graphicsTimelineSemaphore;
+    }
+
+    uint64_t getComputeTimelineValue() const
+    {
+        return m_computeTimelineValue;
+    }
+
+    uint64_t getGraphicsTimelineValue() const
+    {
+        return m_graphicsTimelineValue;
+    }
+
+    uint64_t getLastGraphicsUse(uint32_t bufferIndex) const
+    {
+        return m_lastGraphicsUse[bufferIndex];
+    }
+
+    void setLastGraphicsUse(uint32_t bufferIndex, uint64_t value)
+    {
+        m_lastGraphicsUse[bufferIndex] = value;
+    }
+
+    uint64_t nextGraphicsTimelineValue()
+    {
+        return ++m_graphicsTimelineValue;
+    }
+
+    void update(float deltaTime)
+    {
+        const uint32_t outputBuffer = 1 - m_currentBuffer;
+
+        // Wait until graphics has finished reading the buffer
+        // that compute is about to overwrite.
+        const uint64_t graphicsWaitValue = m_lastGraphicsUse[outputBuffer];
+
+        if (graphicsWaitValue > 0)
+        {
+            vk::Semaphore semaphore = *m_graphicsTimelineSemaphore;
+
+            vk::SemaphoreWaitInfo waitInfo{};
+            waitInfo.semaphoreCount = 1;
+            waitInfo.pSemaphores = &semaphore;
+            waitInfo.pValues = &graphicsWaitValue;
+
+            const vk::Result result = m_device.waitSemaphores(waitInfo, UINT64_MAX);
+
+            if (result != vk::Result::eSuccess)
+            {
+                throw std::runtime_error("Failed waiting for graphics timeline semaphore");
+            }
+        }
+
+        vk::CommandBufferAllocateInfo allocateInfo{};
+        allocateInfo.commandPool = *m_commandPool;
+        allocateInfo.level = vk::CommandBufferLevel::ePrimary;
+        allocateInfo.commandBufferCount = 1;
+
+        vk::raii::CommandBuffers commandBuffers(
+            m_device,
+            allocateInfo
+        );
+
+        auto& commandBuffer = commandBuffers.front();
+
+        vk::CommandBufferBeginInfo beginInfo{};
+        beginInfo.flags =
+            vk::CommandBufferUsageFlagBits::eOneTimeSubmit;
+
+        commandBuffer.begin(beginInfo);
+
+        dispatchCompute(*commandBuffer, deltaTime);
+
+        commandBuffer.end();
+
+        const vk::CommandBuffer rawCommandBuffer = *commandBuffer;
+
+        ++m_computeTimelineValue;
+
+        vk::TimelineSemaphoreSubmitInfo timelineInfo{};
+
+        const uint64_t signalValue = m_computeTimelineValue;
+
+        timelineInfo.signalSemaphoreValueCount = 1;
+        timelineInfo.pSignalSemaphoreValues = &signalValue;
+
+        const vk::Semaphore signalSemaphore =
+        *m_computeTimelineSemaphore;
+
+        vk::SubmitInfo submitInfo{};
+        submitInfo.pNext = &timelineInfo;
+        submitInfo.commandBufferCount = 1;
+        submitInfo.pCommandBuffers = &rawCommandBuffer;
+        submitInfo.signalSemaphoreCount = 1;
+        submitInfo.pSignalSemaphores = &signalSemaphore;
+
+        m_queue.submit(submitInfo, nullptr);
+
+        m_currentBuffer = outputBuffer;
+    }
+
+    void dispatchCompute(vk::CommandBuffer commandBuffer, float deltaTime)
+    {
+        const uint32_t outputBuffer = 1 - m_currentBuffer;
+
+        commandBuffer.bindPipeline(
+            vk::PipelineBindPoint::eCompute,
+            m_computePipeline->getPipeline()
+        );
+
+        commandBuffer.bindDescriptorSets(
+            vk::PipelineBindPoint::eCompute,
+            m_computePipeline->getPipelineLayout(),
+            0,
+            m_computePipeline->getDescriptorSet(m_currentBuffer),
+            nullptr
+        );
+
+        deltaTime = std::clamp(deltaTime, 0.0f, 0.033f);
+
+        commandBuffer.pushConstants(
+            m_computePipeline->getPipelineLayout(),
+            vk::ShaderStageFlagBits::eCompute,
+            0,
+            sizeof(float),
+            &deltaTime
+        );
+
+        commandBuffer.dispatch(
+            (PARTICLE_COUNT + WORKGROUP_SIZE - 1) / WORKGROUP_SIZE,
+            1,
+            1
+        );
+
+        vk::BufferMemoryBarrier barrier{};
+        barrier.srcAccessMask = vk::AccessFlagBits::eShaderWrite;
+        barrier.dstAccessMask = vk::AccessFlagBits::eVertexAttributeRead | vk::AccessFlagBits::eShaderRead;
+        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.buffer = m_buffers->get(outputBuffer);
+        barrier.offset = 0;
+        barrier.size = sizeof(Particle) * PARTICLE_COUNT;
+
+        commandBuffer.pipelineBarrier(
+            vk::PipelineStageFlagBits::eComputeShader,
+            vk::PipelineStageFlagBits::eVertexInput | vk::PipelineStageFlagBits::eVertexShader | vk::PipelineStageFlagBits::eComputeShader,
+            {},
+            nullptr,
+            barrier,
+            nullptr
+        );
+    }
+
+    void recordRender(
+        vk::CommandBuffer commandBuffer,
+        vk::Pipeline graphicsPipeline
+    )
+    {
+        commandBuffer.bindPipeline(
+            vk::PipelineBindPoint::eGraphics,
+            graphicsPipeline
+        );
+
+        const vk::Buffer buffer = getParticleBuffer();
+        constexpr vk::DeviceSize offset = 0;
+
+        commandBuffer.bindVertexBuffers(0, buffer, offset);
+
+        commandBuffer.draw(PARTICLE_COUNT, 1, 0, 0);
+    }
+
+private:
+    const vk::raii::Device& m_device;
+    const vk::raii::Queue& m_queue;
+
+    uint32_t m_computeQueueFamilyIndex = 0;
+    uint32_t m_currentBuffer = 0;
+
+    vk::raii::CommandPool m_commandPool{nullptr};
+
+    std::unique_ptr<ParticleBuffers> m_buffers;
+    std::unique_ptr<ComputePipeline> m_computePipeline;
+
+    vk::raii::Semaphore m_computeTimelineSemaphore{nullptr};
+    vk::raii::Semaphore m_graphicsTimelineSemaphore{nullptr};
+
+    std::array<uint64_t, 2> m_lastGraphicsUse{0, 0};
+
+    uint64_t m_computeTimelineValue = 0;
+    uint64_t m_graphicsTimelineValue = 0;
+
+    void createCommandPool()
+    {
+        vk::CommandPoolCreateInfo info{};
+        info.flags =
+            vk::CommandPoolCreateFlagBits::eResetCommandBuffer;
+        info.queueFamilyIndex = m_computeQueueFamilyIndex;
+
+        m_commandPool = vk::raii::CommandPool(m_device, info);
+    }
+};
+}

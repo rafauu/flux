@@ -1,0 +1,61 @@
+module;
+
+#include <glm/glm.hpp>
+
+export module Simulation.ParticleGenerator;
+
+import std;
+import Simulation.Particle;
+
+export namespace simulation
+{
+class ParticleGenerator
+{
+public:
+    static std::vector<Particle> generate(uint32_t count)
+    {
+        std::vector<Particle> particles(count);
+
+        std::random_device randomDevice;
+        std::mt19937 generator(randomDevice());
+
+        std::uniform_real_distribution<float> position(-1.0f, 1.0f);
+        std::uniform_real_distribution<float> velocity(-0.25f, 0.25f);
+        std::uniform_real_distribution<float> hue(0.0f, 1.0f);
+
+        for (auto& particle : particles)
+        {
+            particle.position = {
+                position(generator),
+                position(generator)
+            };
+
+            particle.velocity = {
+                velocity(generator),
+                velocity(generator)
+            };
+
+            const float h = hue(generator) * 6.0f;
+            const float x = 1.0f - std::abs(std::fmod(h, 2.0f) - 1.0f);
+
+            glm::vec3 rgb;
+
+            if      (h < 1.0f) rgb = {1.0f, x, 0.0f};
+            else if (h < 2.0f) rgb = {x, 1.0f, 0.0f};
+            else if (h < 3.0f) rgb = {0.0f, 1.0f, x};
+            else if (h < 4.0f) rgb = {0.0f, x, 1.0f};
+            else if (h < 5.0f) rgb = {x, 0.0f, 1.0f};
+            else               rgb = {1.0f, 0.0f, x};
+
+            particle.color = {
+                rgb.r,
+                rgb.g,
+                rgb.b,
+                1.0f
+            };
+        }
+
+        return particles;
+    }
+};
+}

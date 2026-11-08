@@ -2,11 +2,11 @@ module;
 
 #include <fast_io.h>
 
-export module Utils;
+export module Core.Utils;
 
 import std;
 
-export namespace Utils
+export namespace core::utils
 {
     [[nodiscard]] std::vector<uint32_t> readShader(const std::filesystem::path& filepath)
     {

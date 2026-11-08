@@ -1,0 +1,107 @@
+
+#version 450
+
+layout(local_size_x = 256) in;
+
+struct Particle
+{
+    vec2 position;
+    vec2 velocity;
+    vec4 color;
+};
+
+layout(std430, binding = 0) readonly buffer InputParticles
+{
+    Particle particlesIn[];
+};
+
+layout(std430, binding = 1) writeonly buffer OutputParticles
+{
+    Particle particlesOut[];
+};
+
+layout(push_constant) uniform SimulationParameters
+{
+    float deltaTime;
+} simulation;
+
+const float BOUNDARY = 0.98;
+const float RADIUS = 0.003;
+const float RESTITUTION = 1;
+
+void main()
+{
+    uint index = gl_GlobalInvocationID.x;
+
+    if (index >= particlesIn.length())
+        return;
+
+    Particle particle = particlesIn[index];
+
+    float dt = clamp(simulation.deltaTime, 0.0, 0.033);
+
+    // Move particle without gravity.
+    particle.position += particle.velocity * dt;
+
+    // Bounce against window boundaries.
+    if (particle.position.x < -BOUNDARY + RADIUS)
+    {
+        particle.position.x = -BOUNDARY + RADIUS;
+        particle.velocity.x = abs(particle.velocity.x) * RESTITUTION;
+    }
+    else if (particle.position.x > BOUNDARY - RADIUS)
+    {
+        particle.position.x = BOUNDARY - RADIUS;
+        particle.velocity.x = -abs(particle.velocity.x) * RESTITUTION;
+    }
+
+    if (particle.position.y < -BOUNDARY + RADIUS)
+    {
+        particle.position.y = -BOUNDARY + RADIUS;
+        particle.velocity.y = abs(particle.velocity.y) * RESTITUTION;
+    }
+    else if (particle.position.y > BOUNDARY - RADIUS)
+    {
+        particle.position.y = BOUNDARY - RADIUS;
+        particle.velocity.y = -abs(particle.velocity.y) * RESTITUTION;
+    }
+
+    // Simple particle collision detection.
+    for (uint i = 0; i < particlesIn.length(); ++i)
+    {
+        if (i == index)
+            continue;
+
+        Particle other = particlesIn[i];
+
+        vec2 difference = particle.position - other.position;
+        float distanceSquared = dot(difference, difference);
+
+        float minimumDistance = RADIUS * 2.0;
+
+        if (distanceSquared >= minimumDistance * minimumDistance)
+            continue;
+
+        float distance = sqrt(max(distanceSquared, 0.000001));
+        vec2 normal = difference / distance;
+
+        // Resolve overlap.
+        float overlap = minimumDistance - distance;
+        particle.position += normal * overlap * 0.5;
+
+        // Equal-mass elastic collision.
+        vec2 relativeVelocity = particle.velocity - other.velocity;
+        float velocityAlongNormal = dot(relativeVelocity, normal);
+
+        if (velocityAlongNormal < 0.0)
+        {
+            float impulse = -(1.0 + RESTITUTION)
+                * velocityAlongNormal * 0.5;
+
+            particle.velocity += impulse * normal;
+        }
+    }
+
+    particlesOut[index] = particle;
+}
+

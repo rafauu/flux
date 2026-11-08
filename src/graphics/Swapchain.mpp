@@ -1,0 +1,325 @@
+module;
+
+#include <vulkan/vulkan_raii.hpp>
+
+export module Graphics.Swapchain;
+
+import std;
+import Core.Logger;
+import Graphics.VulkanContext;
+import Platform.Window;
+
+namespace logger = core::logger;
+
+export namespace graphics
+{
+class Swapchain
+{
+public:
+    Swapchain(VulkanContext& context, platform::Window& window)
+        : m_context(context),
+          m_window(window)
+    {
+        logger::info("Creating swapchain...");
+
+        createSwapchain();
+        createImageViews();
+
+        logger::info("Swapchain created.");
+    }
+
+    ~Swapchain() = default;
+
+    Swapchain(const Swapchain&) = delete;
+    Swapchain& operator=(const Swapchain&) = delete;
+
+    [[nodiscard]] const vk::raii::SwapchainKHR& getHandle() const
+    {
+        return m_swapchain;
+    }
+
+    [[nodiscard]] const std::vector<vk::Image>& getImages() const
+    {
+        return m_images;
+    }
+
+    [[nodiscard]] const std::vector<vk::raii::ImageView>& getImageViews() const
+    {
+        return m_imageViews;
+    }
+
+    [[nodiscard]] const vk::Extent2D& getExtent() const
+    {
+        return m_extent;
+    }
+
+    [[nodiscard]] vk::Format getImageFormat() const
+    {
+        return m_imageFormat;
+    }
+
+    [[nodiscard]] const std::vector<vk::raii::Framebuffer>& getFramebuffers() const
+    {
+        return m_framebuffers;
+    }
+
+    void recreate()
+    {
+        waitForValidFramebufferSize();
+
+        m_context.waitIdle();
+
+        destroySwapchainResources();
+
+        createSwapchain();
+        createImageViews();
+
+        logger::info("Swapchain recreated.");
+    }
+
+    void createFramebuffers(const vk::raii::RenderPass& renderPass)
+    {
+        m_framebuffers.clear();
+
+        for (const auto& imageView : m_imageViews)
+        {
+            vk::FramebufferCreateInfo createInfo{};
+
+            createInfo.renderPass = *renderPass;
+
+            const vk::ImageView attachments[] = {
+                *imageView
+            };
+
+            createInfo.attachmentCount = 1;
+            createInfo.pAttachments = attachments;
+
+            createInfo.width = m_extent.width;
+            createInfo.height = m_extent.height;
+            createInfo.layers = 1;
+
+            m_framebuffers.emplace_back(
+                m_context.device(),
+                createInfo
+            );
+        }
+    }
+
+    void destroyFramebuffers()
+    {
+        m_framebuffers.clear();
+    }
+
+private:
+
+    void createSwapchain()
+    {
+        const auto capabilities =
+            m_context.physicalDevice().getSurfaceCapabilitiesKHR(
+                *m_context.surface()
+            );
+
+        const auto formats =
+            m_context.physicalDevice().getSurfaceFormatsKHR(
+                *m_context.surface()
+            );
+
+        const auto presentModes =
+            m_context.physicalDevice().getSurfacePresentModesKHR(
+                *m_context.surface()
+            );
+
+        if (formats.empty() || presentModes.empty())
+        {
+            throw std::runtime_error("Swapchain support is inadequate.");
+        }
+
+        const auto surfaceFormat = chooseSurfaceFormat(formats);
+
+        const auto presentMode = choosePresentMode(presentModes);
+
+        m_extent = chooseExtent(capabilities);
+
+        uint32_t imageCount = capabilities.minImageCount + 1;
+
+        if (capabilities.maxImageCount > 0)
+        {
+            imageCount = std::min(imageCount, capabilities.maxImageCount);
+        }
+
+        vk::SwapchainCreateInfoKHR createInfo{};
+        createInfo.surface = *m_context.surface();
+        createInfo.minImageCount = imageCount;
+        createInfo.imageFormat = surfaceFormat.format;
+        createInfo.imageColorSpace = surfaceFormat.colorSpace;
+        createInfo.imageExtent = m_extent;
+        createInfo.imageArrayLayers = 1;
+        createInfo.imageUsage = vk::ImageUsageFlagBits::eColorAttachment;
+
+        const uint32_t queueFamilyIndices[] = {
+            m_context.graphicsQueueFamilyIndex(),
+            m_context.presentQueueFamilyIndex()
+        };
+
+        if (queueFamilyIndices[0] != queueFamilyIndices[1])
+        {
+            createInfo.imageSharingMode = vk::SharingMode::eConcurrent;
+            createInfo.queueFamilyIndexCount = 2;
+            createInfo.pQueueFamilyIndices = queueFamilyIndices;
+        }
+        else
+        {
+            createInfo.imageSharingMode = vk::SharingMode::eExclusive;
+        }
+
+        createInfo.preTransform = capabilities.currentTransform;
+        createInfo.compositeAlpha = chooseCompositeAlpha(capabilities);
+        createInfo.presentMode = presentMode;
+        createInfo.clipped = VK_TRUE;
+        createInfo.oldSwapchain = *m_swapchain;
+
+        m_swapchain = vk::raii::SwapchainKHR(m_context.device(), createInfo);
+
+        m_images = m_swapchain.getImages();
+
+        m_imageFormat = surfaceFormat.format;
+    }
+
+    [[nodiscard]] vk::SurfaceFormatKHR chooseSurfaceFormat(const std::vector<vk::SurfaceFormatKHR>& formats) const
+    {
+        for (const auto& format : formats)
+        {
+            if (format.format == vk::Format::eB8G8R8A8Srgb and
+                format.colorSpace == vk::ColorSpaceKHR::eSrgbNonlinear)
+            {
+                return format;
+            }
+        }
+
+        return formats.front();
+    }
+
+    [[nodiscard]] vk::PresentModeKHR choosePresentMode(const std::vector<vk::PresentModeKHR>& modes) const
+    {
+        for (const auto mode : modes)
+        {
+            if (mode == vk::PresentModeKHR::eMailbox)
+            {
+                return mode;
+            }
+        }
+
+        return vk::PresentModeKHR::eFifo;
+    }
+
+    [[nodiscard]] vk::Extent2D chooseExtent(const vk::SurfaceCapabilitiesKHR& capabilities) const
+    {
+        if (capabilities.currentExtent.width != std::numeric_limits<uint32_t>::max())
+        {
+            return capabilities.currentExtent;
+        }
+
+        const auto framebufferSize = m_window.getFramebufferSize();
+
+        vk::Extent2D extent{};
+
+        extent.width = std::clamp(
+            framebufferSize.width,
+            capabilities.minImageExtent.width,
+            capabilities.maxImageExtent.width
+        );
+
+        extent.height = std::clamp(
+            framebufferSize.height,
+            capabilities.minImageExtent.height,
+            capabilities.maxImageExtent.height
+        );
+
+        return extent;
+    }
+
+    [[nodiscard]] vk::CompositeAlphaFlagBitsKHR chooseCompositeAlpha(const vk::SurfaceCapabilitiesKHR& capabilities) const
+    {
+        constexpr vk::CompositeAlphaFlagBitsKHR modes[] = {
+            vk::CompositeAlphaFlagBitsKHR::eOpaque,
+            vk::CompositeAlphaFlagBitsKHR::ePreMultiplied,
+            vk::CompositeAlphaFlagBitsKHR::ePostMultiplied,
+            vk::CompositeAlphaFlagBitsKHR::eInherit
+        };
+
+        for (const auto mode : modes)
+        {
+            if (capabilities.supportedCompositeAlpha & mode)
+            {
+                return mode;
+            }
+        }
+
+        throw std::runtime_error("No supported composite alpha mode.");
+    }
+
+    void createImageViews()
+    {
+        m_imageViews.clear();
+
+        m_imageViews.reserve(m_images.size());
+
+        for (const auto image : m_images)
+        {
+            vk::ImageViewCreateInfo createInfo{};
+            createInfo.image = image;
+            createInfo.viewType = vk::ImageViewType::e2D;
+            createInfo.format = m_imageFormat;
+            createInfo.components.r = vk::ComponentSwizzle::eIdentity;
+            createInfo.components.g = vk::ComponentSwizzle::eIdentity;
+            createInfo.components.b = vk::ComponentSwizzle::eIdentity;
+            createInfo.components.a = vk::ComponentSwizzle::eIdentity;
+            createInfo.subresourceRange.aspectMask = vk::ImageAspectFlagBits::eColor;
+            createInfo.subresourceRange.baseMipLevel = 0;
+            createInfo.subresourceRange.levelCount = 1;
+            createInfo.subresourceRange.baseArrayLayer = 0;
+            createInfo.subresourceRange.layerCount = 1;
+
+            m_imageViews.emplace_back(m_context.device(), createInfo);
+        }
+    }
+
+    void destroySwapchainResources()
+    {
+        m_framebuffers.clear();
+        m_imageViews.clear();
+        m_images.clear();
+
+        m_swapchain = nullptr;
+    }
+
+    void waitForValidFramebufferSize()
+    {
+        while (not m_window.shouldClose())
+        {
+            const auto size = m_window.getFramebufferSize();
+
+            if (size.width > 0 && size.height > 0)
+            {
+                return;
+            }
+
+            m_window.waitEvents();
+        }
+
+        throw std::runtime_error("Window closed while waiting for framebuffer size.");
+    }
+
+private:
+    VulkanContext& m_context;
+    platform::Window& m_window;
+
+    vk::raii::SwapchainKHR m_swapchain{nullptr};
+    std::vector<vk::Image> m_images;
+    std::vector<vk::raii::ImageView> m_imageViews;
+    std::vector<vk::raii::Framebuffer> m_framebuffers;
+
+    vk::Format m_imageFormat = vk::Format::eUndefined;
+    vk::Extent2D m_extent{};
+};
+}

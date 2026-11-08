@@ -3,11 +3,11 @@ module;
 #include <spdlog/spdlog.h>
 #include <spdlog/sinks/stdout_color_sinks.h>
 
-module Logger;
+module Core.Logger;
 
 import std;
 
-namespace Logger
+namespace core::logger
 {
     void init()
     {
@@ -15,7 +15,7 @@ namespace Logger
         auto logger = std::make_shared<spdlog::logger>("flux", spdlog::sinks_init_list{console_sink});
         spdlog::set_default_logger(logger);
         spdlog::set_level(spdlog::level::debug);
-        spdlog::set_pattern("[%Y-%m-%d %H:%M:%S.%e] %^[%-7l] [%-17s:%3#] %v%$");
+        spdlog::set_pattern("[%Y-%m-%d %H:%M:%S.%e] %^[%-7l] [%-18s:%4#] %v%$");
     }
 
     void shutdown()

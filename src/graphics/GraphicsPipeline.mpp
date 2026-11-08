@@ -1,0 +1,221 @@
+module;
+
+#include <vulkan/vulkan_raii.hpp>
+
+export module Graphics.GraphicsPipeline;
+
+import std;
+import Core.Utils;
+import Graphics.Swapchain;
+import Graphics.VulkanContext;
+import Simulation.Particle;
+import Simulation.ParticleSystem;
+
+export namespace graphics
+{
+class GraphicsPipeline
+{
+public:
+    GraphicsPipeline(VulkanContext& context, const Swapchain& swapchain)
+        : m_context(context)
+    {
+        loadShaders();
+        recreate(swapchain);
+    }
+
+    GraphicsPipeline(const GraphicsPipeline&) = delete;
+    GraphicsPipeline& operator=(const GraphicsPipeline&) = delete;
+
+    void recreate(const Swapchain& swapchain)
+    {
+        m_graphicsPipeline = nullptr;
+        m_pipelineLayout = nullptr;
+        m_renderPass = nullptr;
+
+        createRenderPass(swapchain);
+        createPipelineLayout();
+        createGraphicsPipeline(swapchain);
+    }
+
+    [[nodiscard]] const vk::raii::RenderPass& getRenderPass() const
+    {
+        return m_renderPass;
+    }
+
+    [[nodiscard]] const vk::raii::Pipeline& getHandle() const
+    {
+        return m_graphicsPipeline;
+    }
+
+private:
+    void createRenderPass(const Swapchain& swapchain)
+    {
+        vk::AttachmentDescription colorAttachment{};
+        colorAttachment.format = swapchain.getImageFormat();
+        colorAttachment.samples = vk::SampleCountFlagBits::e1;
+        colorAttachment.loadOp = vk::AttachmentLoadOp::eClear;
+        colorAttachment.storeOp = vk::AttachmentStoreOp::eStore;
+        colorAttachment.initialLayout = vk::ImageLayout::eUndefined;
+        colorAttachment.finalLayout = vk::ImageLayout::ePresentSrcKHR;
+
+        vk::AttachmentReference colorRef{};
+        colorRef.attachment = 0;
+        colorRef.layout = vk::ImageLayout::eColorAttachmentOptimal;
+
+        vk::SubpassDescription subpass{};
+        subpass.pipelineBindPoint = vk::PipelineBindPoint::eGraphics;
+        subpass.colorAttachmentCount = 1;
+        subpass.pColorAttachments = &colorRef;
+
+        vk::SubpassDependency dependency{};
+        dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
+        dependency.dstSubpass = 0;
+        dependency.srcStageMask = vk::PipelineStageFlagBits::eColorAttachmentOutput;
+        dependency.dstStageMask = vk::PipelineStageFlagBits::eColorAttachmentOutput;
+        dependency.dstAccessMask = vk::AccessFlagBits::eColorAttachmentWrite;
+
+        vk::RenderPassCreateInfo info{};
+        info.attachmentCount = 1;
+        info.pAttachments = &colorAttachment;
+        info.subpassCount = 1;
+        info.pSubpasses = &subpass;
+        info.dependencyCount = 1;
+        info.pDependencies = &dependency;
+
+        m_renderPass = vk::raii::RenderPass(m_context.device(), info);
+    }
+
+    void createPipelineLayout()
+    {
+        vk::PipelineLayoutCreateInfo info{};
+        m_pipelineLayout = vk::raii::PipelineLayout(m_context.device(), info);
+    }
+
+    void createGraphicsPipeline(const Swapchain& swapchain)
+    {
+        vk::PipelineShaderStageCreateInfo shaderStages[2]{};
+
+        shaderStages[0].stage = vk::ShaderStageFlagBits::eVertex;
+        shaderStages[0].module = *m_vertexShader;
+        shaderStages[0].pName = "main";
+
+        shaderStages[1].stage = vk::ShaderStageFlagBits::eFragment;
+        shaderStages[1].module = *m_fragmentShader;
+        shaderStages[1].pName = "main";
+
+        vk::VertexInputBindingDescription binding{};
+        binding.binding = 0;
+        binding.stride = sizeof(simulation::Particle);
+        binding.inputRate = vk::VertexInputRate::eVertex;
+
+        vk::VertexInputAttributeDescription attributes[2]{};
+
+        attributes[0].location = 0;
+        attributes[0].binding = 0;
+        attributes[0].format = vk::Format::eR32G32Sfloat;
+        attributes[0].offset = offsetof(simulation::Particle, position);
+
+        attributes[1].location = 1;
+        attributes[1].binding = 0;
+        attributes[1].format = vk::Format::eR32G32B32A32Sfloat;
+        attributes[1].offset = offsetof(simulation::Particle, color);
+
+        vk::PipelineVertexInputStateCreateInfo vertexInput{};
+        vertexInput.vertexBindingDescriptionCount = 1;
+        vertexInput.pVertexBindingDescriptions = &binding;
+        vertexInput.vertexAttributeDescriptionCount = 2;
+        vertexInput.pVertexAttributeDescriptions = attributes;
+
+        vk::PipelineInputAssemblyStateCreateInfo inputAssembly{};
+        inputAssembly.topology = vk::PrimitiveTopology::ePointList;
+
+        const auto extent = swapchain.getExtent();
+
+        vk::Viewport viewport{};
+        viewport.width = static_cast<float>(extent.width);
+        viewport.height = static_cast<float>(extent.height);
+        viewport.maxDepth = 1.0f;
+
+        vk::Rect2D scissor{};
+        scissor.extent = extent;
+
+        vk::PipelineViewportStateCreateInfo viewportState{};
+        viewportState.viewportCount = 1;
+        viewportState.pViewports = &viewport;
+        viewportState.scissorCount = 1;
+        viewportState.pScissors = &scissor;
+
+        vk::PipelineRasterizationStateCreateInfo rasterization{};
+        rasterization.polygonMode = vk::PolygonMode::eFill;
+        rasterization.lineWidth = 1.0f;
+        rasterization.cullMode = vk::CullModeFlagBits::eNone;
+        rasterization.frontFace = vk::FrontFace::eCounterClockwise;
+
+        vk::PipelineMultisampleStateCreateInfo multisampling{};
+        multisampling.rasterizationSamples = vk::SampleCountFlagBits::e1;
+
+        vk::PipelineColorBlendAttachmentState blendAttachment{};
+        blendAttachment.blendEnable = VK_TRUE;
+        blendAttachment.srcColorBlendFactor = vk::BlendFactor::eSrcAlpha;
+        blendAttachment.dstColorBlendFactor = vk::BlendFactor::eOne;
+        blendAttachment.colorBlendOp = vk::BlendOp::eAdd;
+        blendAttachment.srcAlphaBlendFactor = vk::BlendFactor::eOne;
+        blendAttachment.dstAlphaBlendFactor = vk::BlendFactor::eOneMinusSrcAlpha;
+        blendAttachment.alphaBlendOp = vk::BlendOp::eAdd;
+        blendAttachment.colorWriteMask =
+            vk::ColorComponentFlagBits::eR |
+            vk::ColorComponentFlagBits::eG |
+            vk::ColorComponentFlagBits::eB |
+            vk::ColorComponentFlagBits::eA;
+
+        vk::PipelineColorBlendStateCreateInfo colorBlending{};
+        colorBlending.attachmentCount = 1;
+        colorBlending.pAttachments = &blendAttachment;
+
+        vk::GraphicsPipelineCreateInfo info{};
+        info.stageCount = 2;
+        info.pStages = shaderStages;
+        info.pVertexInputState = &vertexInput;
+        info.pInputAssemblyState = &inputAssembly;
+        info.pViewportState = &viewportState;
+        info.pRasterizationState = &rasterization;
+        info.pMultisampleState = &multisampling;
+        info.pColorBlendState = &colorBlending;
+        info.layout = *m_pipelineLayout;
+        info.renderPass = *m_renderPass;
+        info.subpass = 0;
+
+        m_graphicsPipeline = vk::raii::Pipeline(m_context.device(), nullptr, info);
+    }
+
+    [[nodiscard]] vk::raii::ShaderModule createShaderModule(const std::vector<uint32_t>& code)
+    {
+        vk::ShaderModuleCreateInfo info{};
+        info.codeSize = code.size() * sizeof(uint32_t);
+        info.pCode = code.data();
+
+        return vk::raii::ShaderModule(m_context.device(), info);
+    }
+
+    void loadShaders()
+    {
+        const std::filesystem::path path = FLUX_SHADER_DIR;
+
+        const auto vertexCode = core::utils::readShader(path / "particle.vert.spv");
+        const auto fragmentCode = core::utils::readShader(path / "particle.frag.spv");
+
+        m_vertexShader = createShaderModule(vertexCode);
+        m_fragmentShader = createShaderModule(fragmentCode);
+    }
+
+private:
+    VulkanContext& m_context;
+
+    vk::raii::ShaderModule m_vertexShader{nullptr};
+    vk::raii::ShaderModule m_fragmentShader{nullptr};
+
+    vk::raii::RenderPass m_renderPass{nullptr};
+    vk::raii::PipelineLayout m_pipelineLayout{nullptr};
+    vk::raii::Pipeline m_graphicsPipeline{nullptr};
+};
+}

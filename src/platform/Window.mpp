@@ -1,0 +1,161 @@
+module;
+
+#include <vulkan/vulkan_raii.hpp>
+#include <GLFW/glfw3.h>
+
+export module Platform.Window;
+
+import std;
+import Core.Logger;
+
+namespace logger = core::logger;
+
+export namespace platform
+{
+class Window
+{
+public:
+    Window(uint32_t width, uint32_t height, std::string title)
+        : m_width(width),
+          m_height(height),
+          m_title(std::move(title))
+    {
+        logger::info("Creating window: {}", m_title);
+
+        initGLFW();
+        createWindow();
+
+        logger::info("Window created successfully.");
+    }
+
+    ~Window()
+    {
+        destroyWindow();
+
+        if (m_glfwInitialized)
+        {
+            glfwTerminate();
+            m_glfwInitialized = false;
+        }
+    }
+
+    Window(const Window&) = delete;
+    Window& operator=(const Window&) = delete;
+
+    void pollEvents() const
+    {
+        glfwPollEvents();
+    }
+
+    void waitEvents() const
+    {
+        glfwWaitEvents();
+    }
+
+    [[nodiscard]] bool shouldClose() const
+    {
+        return glfwWindowShouldClose(m_window);
+    }
+
+    void requestClose() const
+    {
+        glfwSetWindowShouldClose(m_window, GLFW_TRUE);
+    }
+
+    [[nodiscard]] vk::Extent2D getFramebufferSize() const
+    {
+        int width = 0;
+        int height = 0;
+
+        glfwGetFramebufferSize(m_window, &width, &height);
+
+        return {
+            static_cast<uint32_t>(width),
+            static_cast<uint32_t>(height)
+        };
+    }
+
+    [[nodiscard]] bool wasResized() const
+    {
+        return m_framebufferResized;
+    }
+
+    void resetResizeFlag()
+    {
+        m_framebufferResized = false;
+    }
+
+    [[nodiscard]] GLFWwindow* getNativeHandle() const
+    {
+        return m_window;
+    }
+
+private:
+    void initGLFW()
+    {
+        if (not glfwInit())
+        {
+            throw std::runtime_error("Failed to initialize GLFW.");
+        }
+
+        m_glfwInitialized = true;
+
+        if (not glfwVulkanSupported())
+        {
+            throw std::runtime_error("GLFW reports that Vulkan is not supported.");
+        }
+
+        glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+        glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
+    }
+
+    void createWindow()
+    {
+        m_window = glfwCreateWindow(
+            static_cast<int>(m_width),
+            static_cast<int>(m_height),
+            m_title.c_str(),
+            nullptr,
+            nullptr
+        );
+
+        if (not m_window)
+        {
+            throw std::runtime_error("Failed to create GLFW window.");
+        }
+
+        glfwSetWindowUserPointer(m_window, this);
+        glfwSetFramebufferSizeCallback(m_window, framebufferResizeCallback);
+    }
+
+    static void framebufferResizeCallback(GLFWwindow* window, int width, int height)
+    {
+        if (auto self = static_cast<Window*>(glfwGetWindowUserPointer(window)))
+        {
+            self->m_framebufferResized = true;
+            self->m_width = static_cast<uint32_t>(width > 0 ? width : 0);
+            self->m_height = static_cast<uint32_t>(height > 0 ? height : 0);
+        }
+    }
+
+    void destroyWindow()
+    {
+        if (m_window)
+        {
+            glfwDestroyWindow(m_window);
+            m_window = nullptr;
+        }
+    }
+
+private:
+    GLFWwindow* m_window = nullptr;
+
+    uint32_t m_width = 0;
+    uint32_t m_height = 0;
+
+    std::string m_title;
+
+    bool m_framebufferResized = false;
+    bool m_glfwInitialized = false;
+};
+}
