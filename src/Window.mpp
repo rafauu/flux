@@ -1,0 +1,66 @@
+module;
+
+#define GLFW_INCLUDE_VULKAN
+#include <GLFW/glfw3.h>
+
+export module Window;
+
+import std;
+
+export class Window
+{
+public:
+    Window(int width, int height, std::string_view title)
+    {
+        if (not glfwInit())
+        {
+            throw std::runtime_error("Failed to initialize GLFW");
+        }
+
+        glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
+        glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
+
+        window = glfwCreateWindow(width, height, title.data(), nullptr, nullptr);
+        if (not window)
+        {
+            throw std::runtime_error("Failed to create GLFW window");
+        }
+    }
+
+    ~Window()
+    {
+        if (window)
+        {
+            glfwDestroyWindow(window);
+        }
+        glfwTerminate();
+    }
+
+    Window(const Window&) = delete;
+    Window& operator=(const Window&) = delete;
+
+    [[nodiscard]] bool shouldClose() const
+    {
+        return glfwWindowShouldClose(window);
+    }
+
+    void pollEvents() const
+    {
+        glfwPollEvents();
+    }
+
+    [[nodiscard]] GLFWwindow* getHandle() const
+    {
+        return window;
+    }
+
+    [[nodiscard]] std::vector<const char*> getRequiredExtensions() const
+    {
+        uint32_t count = 0;
+        const char** extensions = glfwGetRequiredInstanceExtensions(&count);
+        return {extensions, extensions + count};
+    }
+
+private:
+    GLFWwindow* window{nullptr};
+};

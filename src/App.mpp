@@ -1,0 +1,292 @@
+module;
+#include <vulkan/vulkan_raii.hpp>
+#define GLFW_INCLUDE_VULKAN
+#include <GLFW/glfw3.h>
+export module App;
+
+import std;
+import Logger;
+import Swapchain;
+import Utils;
+import VulkanContext;
+import Window;
+
+export class App
+{
+public:
+    App()
+      : window(800, 600, "Flux Renderer"),
+        vkContext(window, "Flux"),
+        swapchain(window, vkContext)
+    {
+        const auto& device = vkContext.getDevice();
+
+        vk::CommandPoolCreateInfo poolInfo{};
+        poolInfo.flags = vk::CommandPoolCreateFlagBits::eResetCommandBuffer;
+        poolInfo.queueFamilyIndex = vkContext.getGraphicsQueueFamilyIndex();
+        commandPool = vk::raii::CommandPool(device, poolInfo);
+
+        vk::CommandBufferAllocateInfo allocInfo{};
+        allocInfo.commandPool = *commandPool;
+        allocInfo.level = vk::CommandBufferLevel::ePrimary;
+        allocInfo.commandBufferCount = 1;
+
+        auto commandBuffers = vk::raii::CommandBuffers(device, allocInfo);
+        commandBuffer = std::move(commandBuffers.front());
+
+        vk::SemaphoreCreateInfo semaphoreInfo{};
+        vk::FenceCreateInfo fenceInfo{vk::FenceCreateFlagBits::eSignaled};
+
+        imageAvailableSemaphore = vk::raii::Semaphore(device, semaphoreInfo);
+        renderFinishedSemaphore = vk::raii::Semaphore(device, semaphoreInfo);
+        inFlightFence = vk::raii::Fence(device, fenceInfo);
+
+        createGraphicsPipeline();
+
+        Logger::info("Flux application initialized successfully.");
+    }
+
+    void run()
+    {
+        const auto& device = vkContext.getDevice();
+        const auto& queue = vkContext.getGraphicsQueue();
+
+        while (not window.shouldClose())
+        {
+            window.pollEvents();
+
+            while (device.waitForFences({*inFlightFence}, VK_TRUE, UINT64_MAX) != vk::Result::eSuccess);
+            device.resetFences({*inFlightFence});
+
+            auto [result, imageIndex] = swapchain.getHandle().acquireNextImage(UINT64_MAX, *imageAvailableSemaphore, nullptr);
+            if (result != vk::Result::eSuccess and result != vk::Result::eSuboptimalKHR)
+            {
+                throw std::runtime_error("Failed to acquire swapchain image!");
+            }
+
+            commandBuffer.reset();
+            commandBuffer.begin({vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
+
+            vk::ImageMemoryBarrier2 barrier{};
+            barrier.srcStageMask = vk::PipelineStageFlagBits2::eColorAttachmentOutput;
+            barrier.srcAccessMask = vk::AccessFlagBits2::eNone;
+            barrier.dstStageMask = vk::PipelineStageFlagBits2::eColorAttachmentOutput;
+            barrier.dstAccessMask = vk::AccessFlagBits2::eColorAttachmentWrite;
+            barrier.oldLayout = vk::ImageLayout::eUndefined;
+            barrier.newLayout = vk::ImageLayout::eColorAttachmentOptimal;
+            barrier.image = swapchain.getImages()[imageIndex];
+            barrier.subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1};
+
+            vk::DependencyInfo depInfo{};
+            depInfo.imageMemoryBarrierCount = 1;
+            depInfo.pImageMemoryBarriers = &barrier;
+            commandBuffer.pipelineBarrier2(depInfo);
+
+            vk::RenderingAttachmentInfo colorAttachment{};
+            colorAttachment.imageView = *swapchain.getImageViews()[imageIndex];
+            colorAttachment.imageLayout = vk::ImageLayout::eColorAttachmentOptimal;
+            colorAttachment.loadOp = vk::AttachmentLoadOp::eClear;
+            colorAttachment.storeOp = vk::AttachmentStoreOp::eStore;
+            colorAttachment.clearValue = vk::ClearValue{vk::ClearColorValue{std::array<float, 4>{0.1f, 0.12f, 0.18f, 1.0f}}};
+
+            vk::RenderingInfo renderingInfo{};
+            renderingInfo.renderArea = vk::Rect2D{{0, 0}, swapchain.getImageExtent()};
+            renderingInfo.layerCount = 1;
+            renderingInfo.colorAttachmentCount = 1;
+            renderingInfo.pColorAttachments = &colorAttachment;
+
+            commandBuffer.beginRendering(renderingInfo);
+            commandBuffer.bindPipeline(
+                vk::PipelineBindPoint::eGraphics,
+                *graphicsPipeline
+            );
+
+            vk::Viewport viewport{};
+            viewport.x = 0.0f;
+            viewport.y = 0.0f;
+            viewport.width = static_cast<float>(swapchain.getImageExtent().width);
+            viewport.height = static_cast<float>(swapchain.getImageExtent().height);
+            viewport.minDepth = 0.0f;
+            viewport.maxDepth = 1.0f;
+
+            commandBuffer.setViewport(0, viewport);
+
+            vk::Rect2D scissor{
+                vk::Offset2D{0, 0},
+                swapchain.getImageExtent()
+            };
+
+            commandBuffer.setScissor(0, scissor);
+
+            commandBuffer.draw(
+                3,  // vertex count
+                1,  // instance count
+                0,  // first vertex
+                0   // first instance
+            );
+            commandBuffer.endRendering();
+
+            barrier.srcStageMask = vk::PipelineStageFlagBits2::eColorAttachmentOutput;
+            barrier.srcAccessMask = vk::AccessFlagBits2::eColorAttachmentWrite;
+            barrier.dstStageMask = vk::PipelineStageFlagBits2::eBottomOfPipe;
+            barrier.dstAccessMask = vk::AccessFlagBits2::eNone;
+            barrier.oldLayout = vk::ImageLayout::eColorAttachmentOptimal;
+            barrier.newLayout = vk::ImageLayout::ePresentSrcKHR;
+
+            commandBuffer.pipelineBarrier2(depInfo);
+            commandBuffer.end();
+
+            vk::CommandBufferSubmitInfo cmdBufInfo{*commandBuffer};
+            vk::SemaphoreSubmitInfo waitInfo{*imageAvailableSemaphore, 0, vk::PipelineStageFlagBits2::eColorAttachmentOutput};
+            vk::SemaphoreSubmitInfo signalInfo{*renderFinishedSemaphore, 0, vk::PipelineStageFlagBits2::eAllCommands};
+
+            vk::SubmitInfo2 submitInfo{};
+            submitInfo.waitSemaphoreInfoCount = 1;
+            submitInfo.pWaitSemaphoreInfos = &waitInfo;
+            submitInfo.commandBufferInfoCount = 1;
+            submitInfo.pCommandBufferInfos = &cmdBufInfo;
+            submitInfo.signalSemaphoreInfoCount = 1;
+            submitInfo.pSignalSemaphoreInfos = &signalInfo;
+
+            queue.submit2(submitInfo, *inFlightFence);
+
+            vk::SwapchainKHR vkSwapchain{*swapchain.getHandle()};
+
+            vk::PresentInfoKHR presentInfo{};
+            presentInfo.waitSemaphoreCount = 1;
+            presentInfo.pWaitSemaphores = &*renderFinishedSemaphore;
+            presentInfo.swapchainCount = 1;
+            presentInfo.pSwapchains = &vkSwapchain;
+            presentInfo.pImageIndices = &imageIndex;
+
+            if (queue.presentKHR(presentInfo) != vk::Result::eSuccess)
+            {
+                throw std::runtime_error("Failed to present swapchain image!");
+            }
+        }
+
+        device.waitIdle();
+    }
+
+private:
+    void createGraphicsPipeline()
+    {
+        const auto& device = vkContext.getDevice();
+
+        const std::filesystem::path shaderDir = FLUX_SHADER_DIR;
+
+        auto vertCode = Utils::readShader(shaderDir / "fullscreen.vert.spv");
+        auto fragCode = Utils::readShader(shaderDir / "fullscreen.frag.spv");
+
+        vk::ShaderModuleCreateInfo vertInfo{};
+        vertInfo.codeSize = vertCode.size() * sizeof(uint32_t);
+        vertInfo.pCode = vertCode.data();
+
+        vk::ShaderModuleCreateInfo fragInfo{};
+        fragInfo.codeSize = fragCode.size() * sizeof(uint32_t);
+        fragInfo.pCode = fragCode.data();
+
+        vk::raii::ShaderModule vertShader(device, vertInfo);
+        vk::raii::ShaderModule fragShader(device, fragInfo);
+
+        vk::PipelineShaderStageCreateInfo shaderStages[] = {
+            {
+                {},
+                vk::ShaderStageFlagBits::eVertex,
+                *vertShader,
+                "main"
+            },
+            {
+                {},
+                vk::ShaderStageFlagBits::eFragment,
+                *fragShader,
+                "main"
+            }
+        };
+
+        vk::PipelineVertexInputStateCreateInfo vertexInput{};
+
+        vk::PipelineInputAssemblyStateCreateInfo inputAssembly{};
+        inputAssembly.topology = vk::PrimitiveTopology::eTriangleList;
+
+        vk::PipelineViewportStateCreateInfo viewportState{};
+        viewportState.viewportCount = 1;
+        viewportState.scissorCount = 1;
+
+        vk::DynamicState dynamicStates[] = {
+            vk::DynamicState::eViewport,
+            vk::DynamicState::eScissor
+        };
+
+        vk::PipelineDynamicStateCreateInfo dynamicState{};
+        dynamicState.dynamicStateCount = 2;
+        dynamicState.pDynamicStates = dynamicStates;
+
+        vk::PipelineRasterizationStateCreateInfo rasterization{};
+        rasterization.polygonMode = vk::PolygonMode::eFill;
+        rasterization.cullMode = vk::CullModeFlagBits::eNone;
+        rasterization.frontFace = vk::FrontFace::eCounterClockwise;
+        rasterization.lineWidth = 1.0f;
+
+        vk::PipelineMultisampleStateCreateInfo multisampling{};
+        multisampling.rasterizationSamples = vk::SampleCountFlagBits::e1;
+
+        vk::PipelineColorBlendAttachmentState colorAttachment{};
+        colorAttachment.blendEnable = VK_FALSE;
+        colorAttachment.colorWriteMask =
+            vk::ColorComponentFlagBits::eR |
+            vk::ColorComponentFlagBits::eG |
+            vk::ColorComponentFlagBits::eB |
+            vk::ColorComponentFlagBits::eA;
+
+        vk::PipelineColorBlendStateCreateInfo colorBlending{};
+        colorBlending.attachmentCount = 1;
+        colorBlending.pAttachments = &colorAttachment;
+
+        vk::PipelineLayoutCreateInfo layoutInfo{};
+
+        pipelineLayout = vk::raii::PipelineLayout(
+            device,
+            layoutInfo
+        );
+
+        vk::Format colorFormat = swapchain.getImageFormat();
+
+        vk::PipelineRenderingCreateInfo pipelineRendering{};
+        pipelineRendering.colorAttachmentCount = 1;
+        pipelineRendering.pColorAttachmentFormats = &colorFormat;
+
+        vk::GraphicsPipelineCreateInfo pipelineInfo{};
+        pipelineInfo.pNext = &pipelineRendering;
+        pipelineInfo.stageCount = 2;
+        pipelineInfo.pStages = shaderStages;
+        pipelineInfo.pVertexInputState = &vertexInput;
+        pipelineInfo.pInputAssemblyState = &inputAssembly;
+        pipelineInfo.pViewportState = &viewportState;
+        pipelineInfo.pRasterizationState = &rasterization;
+        pipelineInfo.pMultisampleState = &multisampling;
+        pipelineInfo.pColorBlendState = &colorBlending;
+        pipelineInfo.pDynamicState = &dynamicState;
+        pipelineInfo.layout = *pipelineLayout;
+
+        graphicsPipeline = vk::raii::Pipeline(
+            device,
+            nullptr,
+            pipelineInfo
+        );
+    }
+
+    Window window;
+    VulkanContext vkContext;
+    Swapchain swapchain;
+
+    vk::raii::PipelineLayout pipelineLayout{nullptr};
+    vk::raii::Pipeline graphicsPipeline{nullptr};
+
+    vk::raii::CommandPool commandPool{nullptr};
+    vk::raii::CommandBuffer commandBuffer{nullptr};
+
+    vk::raii::Semaphore imageAvailableSemaphore{nullptr};
+    vk::raii::Semaphore renderFinishedSemaphore{nullptr};
+    vk::raii::Fence inFlightFence{nullptr};
+};

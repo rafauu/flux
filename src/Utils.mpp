@@ -1,0 +1,31 @@
+module;
+
+#include <fast_io.h>
+
+export module Utils;
+
+import std;
+
+export namespace Utils
+{
+    [[nodiscard]] std::vector<uint32_t> readShader(const std::filesystem::path& filepath)
+    {
+        ::fast_io::native_file_loader file{
+            ::fast_io::mnp::os_c_str(filepath.c_str())
+        };
+
+        const auto size = std::ranges::size(file);
+
+        if (size == 0 or size % sizeof(uint32_t) != 0)
+        {
+            throw std::runtime_error("Invalid SPIR-V file: " + filepath.string());
+        }
+
+        std::span<const uint32_t> shaderSpan{
+            reinterpret_cast<const uint32_t*>(std::ranges::data(file)),
+            size / sizeof(uint32_t)
+        };
+
+        return shaderSpan | std::ranges::to<std::vector>();
+    }
+}

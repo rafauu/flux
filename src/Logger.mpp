@@ -1,0 +1,62 @@
+export module Logger;
+
+import std;
+
+namespace Logger
+{
+    void init();
+    void shutdown();
+    void logMessage(std::source_location loc, int level, std::string_view msg);
+
+    struct SourceFormat
+    {
+        std::string_view fmt;
+        std::source_location loc;
+
+        template <typename T>
+        requires std::is_convertible_v<T, std::string_view>
+        consteval SourceFormat(const T& f, const std::source_location& l = std::source_location::current())
+            : fmt{f},
+              loc{l}
+        {}
+    };
+
+    export
+    {
+        class Guard
+        {
+        public:
+            Guard() { init(); }
+            ~Guard() { shutdown(); }
+
+            Guard(const Guard&) = delete;
+            Guard& operator=(const Guard&) = delete;
+            Guard(Guard&&) = delete;
+            Guard& operator=(Guard&&) = delete;
+        };
+
+        template<typename... Args>
+        void debug(SourceFormat fmt, Args&&... args)
+        {
+            logMessage(fmt.loc, 1, std::format(std::runtime_format(fmt.fmt), std::forward<Args>(args)...));
+        }
+
+        template<typename... Args>
+        void info(SourceFormat fmt, Args&&... args)
+        {
+            logMessage(fmt.loc, 2, std::format(std::runtime_format(fmt.fmt), std::forward<Args>(args)...));
+        }
+
+        template<typename... Args>
+        void warn(SourceFormat fmt, Args&&... args)
+        {
+            logMessage(fmt.loc, 3, std::format(std::runtime_format(fmt.fmt), std::forward<Args>(args)...));
+        }
+
+        template<typename... Args>
+        void error(SourceFormat fmt, Args&&... args)
+        {
+            logMessage(fmt.loc, 4, std::format(std::runtime_format(fmt.fmt), std::forward<Args>(args)...));
+        }
+    }
+}
